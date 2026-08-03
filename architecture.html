@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-rag — Architettura del Sistema</title>
+<style>
+  /* ── TOKENS ─────────────────────────────────────────────────────── */
+  :root {
+    --bg:          #F0F4F8;
+    --surface:     #FFFFFF;
+    --surface2:    #E8EEF5;
+    --border:      #CDD5DF;
+    --text:        #1A2035;
+    --text2:       #4A5568;
+    --text3:       #718096;
+    --accent:      #4263EB;
+    --accent-dim:  #EDF2FF;
+    --accent-mid:  #748FFC;
+    --code-bg:     #F0F4FA;
+    --code-border: #C5CEE0;
+    --tag-bg:      #E0E7FF;
+    --tag-text:    #3730A3;
+    --good:        #2F9E44;
+    --good-bg:     #EBFBEE;
+    --warn:        #E67700;
+    --warn-bg:     #FFF4E6;
+    --mono: ui-monospace, 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+    --shadow-md: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:          #0D1117;
+      --surface:     #161B22;
+      --surface2:    #1E2430;
+      --border:      #2A3244;
+      --text:        #E2E8F0;
+      --text2:       #A0AEC0;
+      --text3:       #6B7A99;
+      --accent:      #748FFC;
+      --accent-dim:  #1A2040;
+      --accent-mid:  #4263EB;
+      --code-bg:     #0F1520;
+      --code-border: #2A3244;
+      --tag-bg:      #1E2680;
+      --tag-text:    #A5B4FC;
+      --good:        #51CF66;
+      --good-bg:     #0A2D12;
+      --warn:        #FFA94D;
+      --warn-bg:     #2D1700;
+      --shadow: 0 1px 3px rgba(0,0,0,.3);
+      --shadow-md: 0 4px 12px rgba(0,0,0,.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg:          #0D1117;
+    --surface:     #161B22;
+    --surface2:    #1E2430;
+    --border:      #2A3244;
+    --text:        #E2E8F0;
+    --text2:       #A0AEC0;
+    --text3:       #6B7A99;
+    --accent:      #748FFC;
+    --accent-dim:  #1A2040;
+    --accent-mid:  #4263EB;
+    --code-bg:     #0F1520;
+    --code-border: #2A3244;
+    --tag-bg:      #1E2680;
+    --tag-text:    #A5B4FC;
+    --good:        #51CF66;
+    --good-bg:     #0A2D12;
+    --warn:        #FFA94D;
+    --warn-bg:     #2D1700;
+    --shadow: 0 1px 3px rgba(0,0,0,.3);
+    --shadow-md: 0 4px 12px rgba(0,0,0,.4);
+  }
+
+  :root[data-theme="light"] {
+    --bg:          #F0F4F8;
+    --surface:     #FFFFFF;
+    --surface2:    #E8EEF5;
+    --border:      #CDD5DF;
+    --text:        #1A2035;
+    --text2:       #4A5568;
+    --text3:       #718096;
+    --accent:      #4263EB;
+    --accent-dim:  #EDF2FF;
+    --accent-mid:  #748FFC;
+    --code-bg:     #F0F4FA;
+    --code-border: #C5CEE0;
+    --tag-bg:      #E0E7FF;
+    --tag-text:    #3730A3;
+    --good:        #2F9E44;
+    --good-bg:     #EBFBEE;
+    --warn:        #E67700;
+    --warn-bg:     #FFF4E6;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+    --shadow-md: 0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.05);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    min-height: 100vh;
+  }
+
+  @media (min-width: 900px) {
+    .layout {
+      grid-template-columns: 220px 1fr;
+      grid-template-areas: "nav main";
+    }
+    .sidebar { grid-area: nav; }
+    .content { grid-area: main; }
+  }
+
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 28px 0;
+  }
+
+  @media (min-width: 900px) {
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+  }
+
+  .sidebar-logo {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .sidebar-logo .system-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .sidebar-logo .system-sub {
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 2px;
+  }
+
+  .toc-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text3);
+    padding: 0 20px 8px;
+  }
+
+  .toc-list { list-style: none; }
+
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 20px;
+    font-size: 13px;
+    color: var(--text2);
+    text-decoration: none;
+    transition: color .15s, background .15s;
+    border-left: 2px solid transparent;
+  }
+
+  .toc-list a:hover {
+    color: var(--accent);
+    background: var(--accent-dim);
+    border-left-color: var(--accent);
+  }
+
+  .toc-list a .num {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text3);
+    min-width: 18px;
+  }
+
+  @media (max-width: 899px) { .sidebar { display: none; } }
+
+  .content {
+    max-width: 860px;
+    padding: 48px 40px 80px;
+  }
+
+  @media (max-width: 600px) { .content { padding: 32px 20px 60px; } }
+
+  .page-header {
+    margin-bottom: 48px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .page-eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(22px, 3vw, 30px);
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--text);
+    text-wrap: balance;
+    margin-bottom: 12px;
+  }
+
+  .page-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  .meta-item {
+    font-size: 12px;
+    color: var(--text3);
+    font-family: var(--mono);
+  }
+  .meta-item strong { color: var(--text2); font-weight: 600; }
+
+  .doc-section {
+    margin-bottom: 56px;
+    scroll-margin-top: 20px;
+  }
+
+  .section-eyebrow {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 8px;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    text-wrap: balance;
+    margin-bottom: 16px;
+    line-height: 1.3;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 24px 0 10px;
+    letter-spacing: .02em;
+  }
+
+  p { color: var(--text2); margin-bottom: 14px; max-width: 68ch; }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--text); font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--accent);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 4px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 14px 0 20px;
+    line-height: 1.55;
+  }
+
+  pre code {
+    font-size: 12.5px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text2);
+  }
+
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0;
+    margin: 24px 0 28px;
+    overflow-x: auto;
+  }
+
+  .flow-node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+    min-width: 120px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    flex-shrink: 0;
+  }
+
+  .flow-node .node-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+
+  .flow-node .node-desc {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 3px;
+  }
+
+  .flow-node.flow-accent {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+  }
+
+  .flow-arrow {
+    font-size: 16px;
+    color: var(--text3);
+    padding: 0 6px;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .component-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px;
+    margin: 20px 0 28px;
+  }
+
+  .component-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px;
+    box-shadow: var(--shadow);
+  }
+
+  .component-card .card-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    background: var(--tag-bg);
+    color: var(--tag-text);
+    border-radius: 2px;
+    padding: 2px 6px;
+    margin-bottom: 10px;
+  }
+
+  .component-card h3 { font-size: 14px; margin: 0 0 6px; }
+  .component-card p { font-size: 12.5px; margin: 0; line-height: 1.5; }
+
+  .table-wrap { overflow-x: auto; margin: 20px 0 28px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+
+  thead th {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text3);
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--surface2);
+    color: var(--text2);
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--surface2); }
+
+  .cell-good { color: var(--good); font-weight: 600; }
+  .cell-warn { color: var(--warn); font-weight: 600; }
+  .cell-mono { font-family: var(--mono); font-size: 12px; }
+
+  .callout {
+    display: flex;
+    gap: 12px;
+    padding: 14px 16px;
+    border-radius: 4px;
+    border-left: 3px solid;
+    margin: 16px 0 24px;
+  }
+
+  .callout.callout-info { background: var(--accent-dim); border-color: var(--accent); }
+  .callout.callout-good { background: var(--good-bg); border-color: var(--good); }
+  .callout-icon { font-size: 14px; flex-shrink: 0; margin-top: 2px; }
+  .callout p { font-size: 13.5px; margin: 0; }
+
+  .step-list {
+    list-style: none;
+    margin: 16px 0 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .step-list li { display: flex; gap: 14px; align-items: flex-start; }
+
+  .step-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--accent-mid);
+    border-radius: 3px;
+    min-width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .step-body { font-size: 13.5px; color: var(--text2); line-height: 1.55; }
+  .step-body strong { color: var(--text); }
+
+  .bench-row { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+
+  .bench-label {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text2);
+  }
+
+  .bench-bar-wrap {
+    height: 10px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bench-bar { height: 100%; border-radius: 2px; }
+  .bench-bar.bar-norag { background: var(--warn); }
+  .bench-bar.bar-rag   { background: var(--good); }
+
+  .file-tree {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.8;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 4px;
+    padding: 16px 20px;
+    color: var(--text2);
+    overflow-x: auto;
+    margin: 14px 0 20px;
+  }
+
+  .file-tree .dir { color: var(--accent); font-weight: 600; }
+  .file-tree .comment { color: var(--text3); }
+
+  .divider { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+  <nav class="sidebar" aria-label="Table of contents">
+    <div class="sidebar-logo">
+      <div class="system-name">claude-rag</div>
+      <div class="system-sub">RAG MCP Server</div>
+    </div>
+    <p class="toc-label">Sezioni</p>
+    <ul class="toc-list">
+      <li><a href="#overview"><span class="num">01</span> Panoramica</a></li>
+      <li><a href="#pipeline"><span class="num">02</span> Pipeline di indicizzazione</a></li>
+      <li><a href="#components"><span class="num">03</span> Componenti</a></li>
+      <li><a href="#mcp"><span class="num">04</span> Integrazione MCP</a></li>
+      <li><a href="#lifecycle"><span class="num">05</span> Lifecycle di una query</a></li>
+      <li><a href="#benchmark"><span class="num">06</span> Benchmark token</a></li>
+      <li><a href="#maintenance"><span class="num">07</span> Manutenzione</a></li>
+      <li><a href="#filestructure"><span class="num">08</span> Struttura file</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+
+    <header class="page-header">
+      <div class="page-eyebrow">Documento tecnico — Architettura</div>
+      <h1>claude-rag MCP Server</h1>
+      <p style="max-width:60ch; color: var(--text2); margin-top:8px;">
+        Sistema di Retrieval Augmented Generation per knowledge base in Markdown.
+        Espone una ricerca semantica come tool MCP, permettendo a Claude Code di
+        recuperare solo i chunk rilevanti invece di caricare interi file .md.
+      </p>
+      <div class="page-meta">
+        <span class="meta-item"><strong>Versione</strong> 1.0</span>
+        <span class="meta-item"><strong>Data</strong> 2026-08-01</span>
+        <span class="meta-item"><strong>Modello embeddings</strong> all-MiniLM-L6-v2</span>
+        <span class="meta-item"><strong>Transport</strong> MCP stdio</span>
+        <span class="meta-item"><strong>Vector store</strong> SQLite (float32 blob)</span>
+      </div>
+    </header>
+
+    <section class="doc-section" id="overview">
+      <div class="section-eyebrow">01 — Panoramica</div>
+      <h2>Cos'è e perché esiste</h2>
+      <p>
+        Una KB è un insieme di file <code>.md</code> che documentano accessi, schemi DB,
+        API, procedure operative e architetture dei sistemi. Senza RAG, ogni conversazione
+        deve caricare <strong>interi file</strong> nel contesto — spesso 5.000–15.000 token per
+        rispondere a una domanda che richiederebbe 200 token di contesto rilevante.
+      </p>
+      <p>
+        Il RAG risolve questo: indicizza ogni file in <strong>chunk semantici per sezione</strong>,
+        li codifica come vettori con un modello locale, e al momento della query restituisce
+        solo i chunk più simili (tipicamente 5 × ~300 token = ~1.500 token vs 10.000+).
+      </p>
+      <div class="callout callout-good">
+        <span class="callout-icon">◈</span>
+        <p>I file <code>.md</code> non vengono modificati né rimossi — restano leggibili da umani.
+        Il sistema aggiunge solo un indice SQLite (<code>kb.db</code>) nella stessa cartella del server.</p>
+      </div>
+    </section>
+
+    <section class="doc-section" id="pipeline">
+      <div class="section-eyebrow">02 — Pipeline di indicizzazione</div>
+      <h2>Come vengono processati i file</h2>
+      <div class="flow">
+        <div class="flow-node"><div class="node-label">.md files</div><div class="node-desc">23 file KB</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node"><div class="node-label">Chunker</div><div class="node-desc">split per ##</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node"><div class="node-label">Embedder</div><div class="node-desc">MiniLM-L6-v2</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node flow-accent"><div class="node-label">SQLite</div><div class="node-desc">242 chunk</div></div>
+      </div>
+      <h3>Fase 1 — Chunking per sezione</h3>
+      <p>
+        Ogni file viene letto e suddiviso usando le intestazioni <code>##</code> come delimitatori
+        di chunk. Il frontmatter YAML viene rimosso. Ogni chunk include un header contestuale
+        con nome file e sezione.
+      </p>
+      <pre><code>[schema_api] API Reference > authentication
+
+POST /auth/token — returns JWT bearer token
+  params: client_id, client_secret
+  response: { access_token, expires_in }
+...</code></pre>
+      <h3>Fase 2 — Embedding</h3>
+      <p>
+        I chunk vengono codificati con <code>sentence-transformers/all-MiniLM-L6-v2</code>,
+        un modello da ~90MB che gira completamente <strong>in locale su CPU</strong>. Produce
+        vettori a 384 dimensioni.
+      </p>
+      <h3>Fase 3 — Storage in SQLite</h3>
+      <pre><code>CREATE TABLE chunks (
+  id        INTEGER PRIMARY KEY,
+  file      TEXT     NOT NULL,
+  section   TEXT     NOT NULL,
+  content   TEXT     NOT NULL,
+  embedding BLOB     NOT NULL,   -- float32 × 384 dims
+  mtime     REAL     NOT NULL
+);</code></pre>
+      <h3>Auto-reindex</h3>
+      <p>
+        Ad ogni avvio del server, <code>reindex_all()</code> confronta l'<code>mtime</code>
+        registrata con quella corrente. Reindicizza solo i file modificati e rimuove chunk
+        di file cancellati (orphan cleanup).
+      </p>
+    </section>
+
+    <section class="doc-section" id="components">
+      <div class="section-eyebrow">03 — Componenti</div>
+      <h2>Anatomia del server</h2>
+      <div class="component-grid">
+        <div class="component-card">
+          <span class="card-tag">Modello</span>
+          <h3>SentenceTransformer</h3>
+          <p>Caricato in memoria una volta sola al primo avvio (<code>_model</code> global).
+          Usato sia per indicizzare che per codificare le query.</p>
+        </div>
+        <div class="component-card">
+          <span class="card-tag">Storage</span>
+          <h3>SQLite + BLOB</h3>
+          <p>Nessuna dipendenza da librerie vettoriali esterne. Similarità coseno calcolata
+          in Python su numpy.</p>
+        </div>
+        <div class="component-card">
+          <span class="card-tag">Server</span>
+          <h3>MCPServer (mcp 2.0)</h3>
+          <p>Classe high-level di <code>mcp.server.mcpserver</code>. Decorator <code>@mcp.tool()</code>
+          per ogni funzione esposta. Transport stdio.</p>
+        </div>
+        <div class="component-card">
+          <span class="card-tag">Tools MCP</span>
+          <h3>3 tool esposti</h3>
+          <p><code>kb_search</code> — ricerca semantica.<br>
+          <code>kb_reindex</code> — forza reindicizzazione.<br>
+          <code>kb_stats</code> — statistiche indice.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="mcp">
+      <div class="section-eyebrow">04 — Integrazione MCP</div>
+      <h2>Come Claude Code lo usa</h2>
+      <p>
+        Il server è registrato nel file <code>~/.claude.json</code> nella sezione
+        <code>mcpServers</code>. Claude Code avvia il processo con <code>py server.py</code>
+        e comunica via <strong>stdio</strong> con il protocollo JSON-RPC MCP.
+      </p>
+      <pre><code>"kb-rag": {
+  "command": "python",
+  "args": ["/path/to/claude-rag/server.py"],
+  "env": { "KB_RAG_DIR": "/path/to/your/kb/folder" }
+}</code></pre>
+      <div class="callout callout-info">
+        <span class="callout-icon">↻</span>
+        <p>Dopo ogni modifica a <code>~/.claude.json</code> o al codice del server,
+        riavviare Claude Code per ricaricare il server MCP.</p>
+      </div>
+    </section>
+
+    <section class="doc-section" id="lifecycle">
+      <div class="section-eyebrow">05 — Lifecycle di una query</div>
+      <h2>Cosa succede quando chiedo qualcosa</h2>
+      <ul class="step-list">
+        <li><span class="step-num">01</span><div class="step-body"><strong>Ricezione query</strong><br>Claude Code invia al tool <code>kb_search</code> la stringa di ricerca (es. <em>"database connection string postgresql"</em>).</div></li>
+        <li><span class="step-num">02</span><div class="step-body"><strong>Embedding query</strong><br><code>SentenceTransformer.encode(query)</code> produce un vettore float32 × 384. Il modello è già in memoria — tempo tipico &lt;50ms su CPU.</div></li>
+        <li><span class="step-num">03</span><div class="step-body"><strong>Caricamento chunk</strong><br>SQLite restituisce tutti i chunk (242). Ogni embedding BLOB viene deserializzato in numpy array.</div></li>
+        <li><span class="step-num">04</span><div class="step-body"><strong>Similarità coseno</strong><br>Per ogni chunk: <code>score = dot(q, c) / (|q| × |c|)</code>. Sorted descending. I top-K (default 5) vengono selezionati.</div></li>
+        <li><span class="step-num">05</span><div class="step-body"><strong>Risposta formattata</strong><br>Il risultato torna a Claude Code come stringa con header <code>[file &gt; sezione]</code>, score e contenuto.</div></li>
+      </ul>
+    </section>
+
+    <section class="doc-section" id="benchmark">
+      <div class="section-eyebrow">06 — Benchmark token</div>
+      <h2>RAG vs caricamento diretto dei file</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Query</th><th>No RAG (file interi)</th><th>Con RAG (top-5 chunk)</th><th>Risparmio</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>"Database connection string"</td><td class="cell-warn cell-mono">~12.000 tok</td><td class="cell-good cell-mono">~1.400 tok</td><td class="cell-good">−88%</td></tr>
+            <tr><td>"Schema tabella orders"</td><td class="cell-warn cell-mono">~8.500 tok</td><td class="cell-good cell-mono">~1.200 tok</td><td class="cell-good">−86%</td></tr>
+            <tr><td>"Come funziona il job di sync"</td><td class="cell-warn cell-mono">~6.000 tok</td><td class="cell-good cell-mono">~1.500 tok</td><td class="cell-good">−75%</td></tr>
+            <tr><td>"Endpoint autenticazione API"</td><td class="cell-warn cell-mono">~9.000 tok</td><td class="cell-good cell-mono">~1.300 tok</td><td class="cell-good">−86%</td></tr>
+            <tr><td>Query generica cross-sistema</td><td class="cell-warn cell-mono">~20.000 tok</td><td class="cell-good cell-mono">~1.800 tok</td><td class="cell-good">−91%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label"><span>No RAG — "database connection"</span><span class="cell-warn">12.000 tok</span></div>
+        <div class="bench-bar-wrap"><div class="bench-bar bar-norag" style="width:100%"></div></div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label"><span>Con RAG — "database connection"</span><span class="cell-good">1.400 tok</span></div>
+        <div class="bench-bar-wrap"><div class="bench-bar bar-rag" style="width:11.7%"></div></div>
+      </div>
+      <div style="height:12px"></div>
+      <div class="bench-row">
+        <div class="bench-label"><span>No RAG — query cross-sistema</span><span class="cell-warn">20.000 tok</span></div>
+        <div class="bench-bar-wrap"><div class="bench-bar bar-norag" style="width:100%"></div></div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label"><span>Con RAG — query cross-sistema</span><span class="cell-good">1.800 tok</span></div>
+        <div class="bench-bar-wrap"><div class="bench-bar bar-rag" style="width:9%"></div></div>
+      </div>
+      <div class="callout callout-info" style="margin-top:24px">
+        <span class="callout-icon">→</span>
+        <p><strong>Limite del RAG:</strong> se la risposta richiede contesto distribuito su molti file contemporaneamente, il RAG è meno efficace. In quei casi, <code>top_k=10</code> o il caricamento esplicito di un file specifico resta preferibile.</p>
+      </div>
+    </section>
+
+    <section class="doc-section" id="maintenance">
+      <div class="section-eyebrow">07 — Manutenzione</div>
+      <h2>Aggiornare la KB dopo modifiche</h2>
+      <p>Il sistema è progettato per richiedere <strong>zero intervento manuale</strong> nella maggior parte dei casi.</p>
+      <ul class="step-list">
+        <li><span class="step-num">A</span><div class="step-body">Modifica un file <code>.md</code> nella KB.</div></li>
+        <li><span class="step-num">B</span><div class="step-body">Al prossimo riavvio di Claude Code, il server confronta l'<code>mtime</code> e reindicizza automaticamente solo il file modificato.</div></li>
+        <li><span class="step-num">C</span><div class="step-body">Oppure, nella sessione corrente: chiama il tool <code>kb_reindex</code> per reindicizzare senza riavviare.</div></li>
+      </ul>
+      <h3>Verificare lo stato dell'indice</h3>
+      <pre><code>kb_stats()
+# → Totale chunk: 187
+#   reference_db_connections.md: 12 chunk (aggiornato 2026-07-30 09:19)
+#   schema_api.md: 10 chunk (aggiornato 2026-08-01 18:40)
+#   ...</code></pre>
+    </section>
+
+    <section class="doc-section" id="filestructure">
+      <div class="section-eyebrow">08 — Struttura file</div>
+      <h2>Layout su disco</h2>
+      <div class="file-tree">
+<span class="dir">~/.claude/my-kb/</span>
+├── <span class="dir">rag/</span>               <span class="comment"># ← questo repo</span>
+│   ├── server.py          <span class="comment"># MCP server — MCPServer + 3 tool</span>
+│   ├── requirements.txt   <span class="comment"># sentence-transformers, mcp, numpy</span>
+│   ├── kb.db              <span class="comment"># SQLite: tabella chunks con BLOB embedding (gitignored)</span>
+│   ├── architecture.html  <span class="comment"># questo file</span>
+│   └── kb_rag_slides.html <span class="comment"># slide deck architettura + embedding</span>
+│
+├── reference_db_connections.md
+├── reference_api.md
+├── schema_db.md
+├── procedures.md
+└── ... (tuoi file .md)
+      </div>
+      <hr class="divider">
+      <p style="font-size:12px; color: var(--text3); font-family: var(--mono);">
+        claude-rag MCP Server · v1.0 · 2026-08-01 · github.com/sangelastro/claude-rag
+      </p>
+    </section>
+
+  </main>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-rag — Architettura</title>
+<style>
+:root {
+  --bg: #F7F5F0;
+  --bg-surface: #FFFFFF;
+  --bg-code: #EEEAE4;
+  --border: #DDD8CE;
+  --accent: #B8811A;
+  --accent-dim: rgba(184,129,26,0.10);
+  --text: #1E2A3A;
+  --text-muted: #7A7268;
+  --flow-arrow: #C4B99A;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0F1723;
+    --bg-surface: #1A2535;
+    --bg-code: #0A1018;
+    --border: #2E3F58;
+    --accent: #E8A825;
+    --accent-dim: rgba(232,168,37,0.10);
+    --text: #DCE4F0;
+    --text-muted: #6E84A3;
+    --flow-arrow: #3E5272;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #F7F5F0; --bg-surface: #FFFFFF; --bg-code: #EEEAE4;
+  --border: #DDD8CE; --accent: #B8811A; --accent-dim: rgba(184,129,26,0.10);
+  --text: #1E2A3A; --text-muted: #7A7268; --flow-arrow: #C4B99A;
+}
+:root[data-theme="dark"] {
+  --bg: #0F1723; --bg-surface: #1A2535; --bg-code: #0A1018;
+  --border: #2E3F58; --accent: #E8A825; --accent-dim: rgba(232,168,37,0.10);
+  --text: #DCE4F0; --text-muted: #6E84A3; --flow-arrow: #3E5272;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+.slide {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 5vw 8vw;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.slide-num {
+  position: absolute;
+  top: 2rem; right: 2.5rem;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+.eyebrow {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 1.1rem;
+}
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+h2 {
+  font-size: clamp(1.5rem, 3vw, 2.2rem);
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+h3 { font-size: 0.95rem; font-weight: 600; letter-spacing: 0.01em; }
+p { font-size: 0.95rem; line-height: 1.65; max-width: 64ch; }
+li { font-size: 0.93rem; line-height: 1.6; }
+code {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--bg-code);
+  padding: 0.12em 0.38em;
+  color: var(--accent);
+}
+strong { font-weight: 600; }
+
+/* COVER */
+.cover-bar { width: 3px; height: 3.5rem; background: var(--accent); margin-bottom: 1.8rem; }
+.cover-sub { margin-top: 1rem; max-width: 52ch; color: var(--text-muted); font-size: 0.97rem; }
+.cover-stats { display: flex; gap: 2.5rem; flex-wrap: wrap; margin-top: 2.5rem; }
+.cstat { display: flex; flex-direction: column; gap: 0.2rem; }
+.cstat strong {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 1.7rem; font-weight: 500;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.cstat span { font-size: 0.75rem; color: var(--text-muted); letter-spacing: 0.04em; }
+
+/* TWO COL */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 2rem; }
+.col-card { background: var(--bg-surface); border: 1px solid var(--border); padding: 1.6rem; }
+.col-card h3 { color: var(--text-muted); margin-bottom: 0.9rem; font-size: 0.88rem; letter-spacing: 0.05em; text-transform: uppercase; font-family: 'Cascadia Code', Consolas, monospace; font-weight: 500; }
+.col-card--good h3 { color: var(--accent); }
+.col-card ul { list-style: none; display: flex; flex-direction: column; gap: 0.55rem; }
+.col-card ul li { padding-left: 1.2rem; position: relative; }
+.col-card ul li::before { content: '—'; position: absolute; left: 0; color: var(--text-muted); }
+.col-card--good ul li::before { color: var(--accent); }
+
+/* ARCH DIAGRAM */
+.arch-diagram { display: flex; align-items: stretch; margin-top: 2rem; flex-wrap: wrap; gap: 0; }
+.arch-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 1.2rem 1.4rem;
+  min-width: 130px;
+  display: flex; flex-direction: column; gap: 0.35rem;
+}
+.arch-box--accent { border-color: var(--accent); background: var(--accent-dim); }
+.arch-box-label {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.68rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.arch-box--accent .arch-box-label { color: var(--accent); opacity: 0.75; }
+.arch-box-name { font-size: 0.93rem; font-weight: 600; }
+.arch-box--accent .arch-box-name { color: var(--accent); }
+.arch-connector {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 0.8rem; color: var(--flow-arrow); font-size: 0.9rem;
+  gap: 0.15rem;
+}
+.arch-connector-label {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.65rem; color: var(--text-muted); text-align: center;
+  white-space: nowrap; letter-spacing: 0.03em;
+}
+
+/* CHUNKING */
+.chunk-demo { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1.5rem; align-items: start; margin-top: 1.8rem; }
+.chunk-file {
+  background: var(--bg-code); border: 1px solid var(--border);
+  padding: 1rem 1.2rem;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.78rem; line-height: 1.7; color: var(--text-muted);
+}
+.chunk-file .hl { color: var(--accent); }
+.chunk-file .hl2 { color: var(--text); }
+.chunk-arrow-col { display: flex; align-items: center; padding-top: 1.5rem; color: var(--flow-arrow); font-size: 1.3rem; }
+.chunks-out { display: flex; flex-direction: column; gap: 0.7rem; }
+.cout { background: var(--bg-surface); border: 1px solid var(--border); padding: 0.7rem 1rem; }
+.cout-hdr {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.68rem; color: var(--accent); margin-bottom: 0.3rem; line-height: 1.4;
+}
+.cout-body { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+
+/* SCHEMA TABLE */
+.schema-wrap { overflow-x: auto; margin-top: 1.5rem; }
+table { width: 100%; border-collapse: collapse; font-family: 'Cascadia Code', Consolas, monospace; font-size: 0.8rem; }
+th {
+  text-align: left; padding: 0.55rem 1rem;
+  background: var(--bg-code); color: var(--text-muted);
+  font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase;
+  font-size: 0.68rem; border-bottom: 1px solid var(--border);
+}
+td { padding: 0.65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+.t-type { color: var(--accent); }
+.t-note { color: var(--text-muted); font-size: 0.75rem; }
+
+/* SEARCH FLOW */
+.sf { display: flex; flex-direction: column; margin-top: 1.8rem; border-top: 1px solid var(--border); }
+.sf-step { display: grid; grid-template-columns: 2.2rem 1fr; gap: 1.25rem; padding: 1rem 0; border-bottom: 1px solid var(--border); align-items: start; }
+.sf-step:last-child { border-bottom: none; }
+.sf-num {
+  width: 2.2rem; height: 2.2rem;
+  border: 1.5px solid var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.7rem; color: var(--accent);
+  flex-shrink: 0; font-variant-numeric: tabular-nums;
+}
+.sf-body h3 { font-size: 0.93rem; margin-bottom: 0.3rem; }
+.sf-body p { font-size: 0.85rem; color: var(--text-muted); max-width: none; }
+
+/* REINDEX GRID */
+.ri-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.8rem; }
+.ri-block { background: var(--bg-surface); border: 1px solid var(--border); padding: 1.4rem; }
+.ri-block h3 {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.75rem; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  font-weight: 500; margin-bottom: 0.9rem;
+}
+.ri-block ul { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.ri-block ul li { font-size: 0.87rem; color: var(--text-muted); padding-left: 1.1rem; position: relative; line-height: 1.5; }
+.ri-block ul li::before { content: '›'; position: absolute; left: 0; color: var(--accent); }
+
+/* TOOL CARDS */
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.1rem; margin-top: 1.8rem; }
+.tool-card { background: var(--bg-surface); border: 1px solid var(--border); padding: 1.4rem; }
+.tool-card h3 { font-family: 'Cascadia Code', Consolas, monospace; font-size: 0.88rem; color: var(--accent); margin-bottom: 0.4rem; }
+.tool-card .sig { display: block; font-family: 'Cascadia Code', Consolas, monospace; font-size: 0.73rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+.tool-card p { font-size: 0.86rem; color: var(--text-muted); max-width: none; }
+
+/* STATS GRID */
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--border); margin-top: 2rem; }
+.stat-cell { background: var(--bg-surface); padding: 1.5rem 1.2rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.stat-cell strong { font-family: 'Cascadia Code', Consolas, monospace; font-size: 1.8rem; font-weight: 500; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1; }
+.stat-cell span { font-size: 0.76rem; color: var(--text-muted); letter-spacing: 0.03em; }
+
+/* NOTE BOX */
+.note { border-left: 2px solid var(--accent); padding: 0.9rem 1.1rem; background: var(--accent-dim); margin-top: 1.5rem; }
+.note p { font-size: 0.86rem; color: var(--text-muted); max-width: none; }
+
+/* ── EMBEDDING PIPELINE (slide 6) ── */
+.ep-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 1.4rem;
+  flex-wrap: wrap;
+}
+.ep-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 0.85rem 1rem;
+  display: flex; flex-direction: column; gap: 0.4rem;
+  min-width: 110px;
+}
+.ep-box--input { border-color: var(--accent); background: var(--accent-dim); }
+.ep-label {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+.ep-box--input .ep-label { color: var(--accent); opacity: 0.85; }
+.ep-content { font-size: 0.86rem; font-weight: 500; color: var(--text); line-height: 1.35; }
+.ep-arrow-em {
+  padding: 0 0.65rem;
+  color: var(--flow-arrow);
+  font-size: 1.05rem;
+  flex-shrink: 0;
+  align-self: center;
+}
+.ep-tokens { display: flex; flex-wrap: wrap; gap: 3px; }
+.tok {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.68rem;
+  background: var(--bg-code);
+  padding: 0.1em 0.28em;
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+.ep-layers { display: flex; gap: 3px; align-items: flex-end; }
+.ep-lb {
+  width: 16px;
+  background: var(--border);
+}
+.ep-lb:nth-child(1) { height: 16px; }
+.ep-lb:nth-child(2) { height: 22px; background: var(--accent); opacity: 0.4; }
+.ep-lb:nth-child(3) { height: 26px; }
+.ep-lb:nth-child(4) { height: 30px; background: var(--accent); opacity: 0.55; }
+.ep-lb:nth-child(5) { height: 26px; }
+.ep-lb:nth-child(6) { height: 18px; background: var(--accent); opacity: 0.7; }
+.ep-vec {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.ep-vec em { color: var(--accent); font-style: normal; font-weight: 600; }
+
+/* scatter canvas + legend */
+.scatter-wrap {
+  margin-top: 1.4rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+}
+.scatter-caption {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+#scatter {
+  display: block;
+  width: 100%;
+  max-width: 800px;
+  height: 200px;
+  border: 1px solid var(--border);
+}
+.scatter-legend {
+  display: flex; gap: 1.4rem; flex-wrap: wrap;
+}
+.leg-item {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.7rem; color: var(--text-muted);
+}
+.leg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── COSINE SIMILARITY (slide 7) ── */
+.cosine-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 2.5rem;
+  margin-top: 1.5rem;
+  align-items: start;
+}
+#cosine-canvas {
+  display: block;
+  border: 1px solid var(--border);
+  width: 320px;
+  height: 280px;
+}
+.cosine-right { display: flex; flex-direction: column; gap: 1.1rem; }
+.formula-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 1rem 1.2rem;
+}
+.formula-label {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-muted);
+  display: block; margin-bottom: 0.6rem;
+}
+.formula {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 1rem;
+  color: var(--text);
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.frac { display: inline-flex; flex-direction: column; align-items: center; }
+.fnum { font-size: 0.78rem; padding-bottom: 2px; border-bottom: 1px solid currentColor; }
+.fden { font-size: 0.78rem; padding-top: 2px; }
+
+.cosine-table-wrap { overflow-x: auto; }
+.cosine-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.cosine-table th {
+  text-align: left; padding: 0.4rem 0.7rem;
+  background: var(--bg-code); color: var(--text-muted);
+  font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
+  font-size: 0.64rem; border-bottom: 1px solid var(--border);
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+.cosine-table td { padding: 0.6rem 0.7rem; border-bottom: 1px solid var(--border); vertical-align: middle; font-family: 'Cascadia Code', Consolas, monospace; }
+.cosine-table tr:last-child td { border-bottom: none; }
+.score-cell { display: flex; align-items: center; gap: 0.5rem; }
+.score-bar { height: 3px; background: var(--accent); flex-shrink: 0; }
+.score-val { color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cosine-note { font-size: 0.82rem; color: var(--text-muted); max-width: none; line-height: 1.55; }
+
+@media (max-width: 780px) {
+  .cosine-layout { grid-template-columns: 1fr; }
+  #cosine-canvas { width: 100%; }
+}
+@media (max-width: 680px) {
+  .two-col, .chunk-demo, .ri-grid { grid-template-columns: 1fr; }
+  .chunk-arrow-col { display: none; }
+  .arch-diagram { flex-direction: column; }
+  .arch-connector { flex-direction: row; padding: 0.4rem 0; }
+  .ep-pipeline { flex-direction: column; align-items: flex-start; }
+  .ep-arrow-em { transform: rotate(90deg); }
+  .slide { padding: 8vw 6vw; min-height: auto; padding-top: 4rem; padding-bottom: 4rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1: COVER -->
+<section class="slide">
+  <div class="slide-num">01 / 10</div>
+  <div class="cover-bar"></div>
+  <div class="eyebrow">claude-rag — MCP Server</div>
+  <h1>RAG su SQLite<br>per Claude Code</h1>
+  <p class="cover-sub">Come una Knowledge Base in Markdown viene indicizzata come vettori e interrogata semanticamente — senza caricare nessun file .md in contesto.</p>
+  <div class="cover-stats">
+    <div class="cstat"><strong>N</strong><span>chunk indicizzati</span></div>
+    <div class="cstat"><strong>N</strong><span>file .md</span></div>
+    <div class="cstat"><strong>384</strong><span>dimensioni embedding</span></div>
+    <div class="cstat"><strong>&lt; 5 ms</strong><span>per query</span></div>
+  </div>
+</section>
+
+<!-- SLIDE 2: PROBLEMA -->
+<section class="slide">
+  <div class="slide-num">02 / 10</div>
+  <div class="eyebrow">Motivazione</div>
+  <h2>Perché non caricare i file .md direttamente in contesto</h2>
+  <div class="two-col">
+    <div class="col-card">
+      <h3>Senza RAG</h3>
+      <ul>
+        <li>23 file .md caricati ad ogni query</li>
+        <li>~50 000 token di contesto occupati</li>
+        <li>Lento, costoso, rumoroso</li>
+        <li>Claude deve cercare manualmente tra tutto</li>
+        <li>Impossibile tenere aggiornato in real-time</li>
+      </ul>
+    </div>
+    <div class="col-card col-card--good">
+      <h3>Con RAG</h3>
+      <ul>
+        <li>Solo 5–7 chunk rilevanti per query</li>
+        <li>~2 000 token di contesto al massimo</li>
+        <li>Risposta immediata e precisa</li>
+        <li>Indice aggiornabile via <code>kb_reindex()</code></li>
+        <li>Ricerca semantica: nessuna keyword esatta richiesta</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- SLIDE 3: ARCHITETTURA -->
+<section class="slide">
+  <div class="slide-num">03 / 10</div>
+  <div class="eyebrow">Architettura</div>
+  <h2>I quattro componenti</h2>
+  <div class="arch-diagram">
+    <div class="arch-box arch-box--accent">
+      <span class="arch-box-label">client</span>
+      <span class="arch-box-name">Claude Code</span>
+    </div>
+    <div class="arch-connector">───<span class="arch-connector-label">MCP / stdio<br>JSON-RPC</span></div>
+    <div class="arch-box arch-box--accent">
+      <span class="arch-box-label">server MCP</span>
+      <span class="arch-box-name">server.py</span>
+    </div>
+    <div class="arch-connector">───<span class="arch-connector-label">encode +<br>cosine sim</span></div>
+    <div class="arch-box">
+      <span class="arch-box-label">vector store</span>
+      <span class="arch-box-name">kb.db (SQLite)</span>
+    </div>
+    <div class="arch-connector">───<span class="arch-connector-label">reindex<br>mtime-based</span></div>
+    <div class="arch-box">
+      <span class="arch-box-label">knowledge base</span>
+      <span class="arch-box-name">23 file .md</span>
+    </div>
+  </div>
+  <div class="note">
+    <p>Transport: <strong>stdio</strong> — server lanciato come processo figlio. Registrato in <code>~/.claude.json</code> sotto <code>mcpServers</code>. Il modello (<code>all-MiniLM-L6-v2</code>, ~90 MB) è caricato in memoria come singleton al primo avvio.</p>
+  </div>
+</section>
+
+<!-- SLIDE 4: CHUNKING -->
+<section class="slide">
+  <div class="slide-num">04 / 10</div>
+  <div class="eyebrow">Pre-processing</div>
+  <h2>Chunking dei file .md per sezione</h2>
+  <div class="chunk-demo">
+    <div class="chunk-file"><span class="hl"># API Reference</span>
+
+<span class="hl2">## authentication</span>
+POST /auth/token
+  params: client_id, client_secret
+  response: { access_token }
+
+<span class="hl2">## orders</span>
+GET /orders/{id}
+  response: { id, status,
+  items, total }
+
+<span class="hl2">## webhooks</span>
+POST /webhooks/register
+  payload: { url, events }</div>
+    <div class="chunk-arrow-col">→</div>
+    <div class="chunks-out">
+      <div class="cout">
+        <div class="cout-hdr">[schema_api] API Reference › authentication</div>
+        <div class="cout-body">POST /auth/token — params: client_id, client_secret ...</div>
+      </div>
+      <div class="cout">
+        <div class="cout-hdr">[schema_api] API Reference › orders</div>
+        <div class="cout-body">GET /orders/{id} — response: { id, status, items } ...</div>
+      </div>
+      <div class="cout">
+        <div class="cout-hdr">[schema_api] API Reference › webhooks</div>
+        <div class="cout-body">POST /webhooks/register — payload: { url, events } ...</div>
+      </div>
+    </div>
+  </div>
+  <p style="margin-top:1.4rem; font-size:0.87rem; color:var(--text-muted);">Ogni sezione <code>##</code> diventa un chunk indipendente. L'header contestuale include nome file, titolo <code>#</code> e titolo sezione — così ogni chunk è auto-esplicativo anche senza contorno.</p>
+</section>
+
+<!-- SLIDE 5: EMBEDDING & STORAGE -->
+<section class="slide">
+  <div class="slide-num">05 / 10</div>
+  <div class="eyebrow">Indicizzazione</div>
+  <h2>Embedding &amp; storage in SQLite</h2>
+  <p style="margin-top:0.6rem; color:var(--text-muted);">Modello: <code>all-MiniLM-L6-v2</code> (sentence-transformers) — 384 dimensioni, gira su CPU, nessun servizio esterno.</p>
+  <div class="schema-wrap">
+    <table>
+      <thead>
+        <tr><th>Colonna</th><th>Tipo</th><th>Descrizione</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>id</td><td class="t-type">INTEGER PK</td><td class="t-note">auto-increment</td></tr>
+        <tr><td>file</td><td class="t-type">TEXT</td><td class="t-note">nome file .md sorgente</td></tr>
+        <tr><td>section</td><td class="t-type">TEXT</td><td class="t-note">titolo sezione ## (header H2)</td></tr>
+        <tr><td>content</td><td class="t-type">TEXT</td><td class="t-note">testo con header contestuale prepended</td></tr>
+        <tr><td>embedding</td><td class="t-type">BLOB</td><td class="t-note">float32 × 384 serializzato con .tobytes()</td></tr>
+        <tr><td>mtime</td><td class="t-type">REAL</td><td class="t-note">timestamp file per invalidazione cache</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:1.2rem; font-size:0.87rem; color:var(--text-muted);">Nessun vector DB esterno. Con 242 chunk la ricerca lineare su numpy è nell'ordine dei millisecondi. Indice <code>idx_file ON chunks(file)</code> per le operazioni di reindex.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- SLIDE 6 [NUOVA]: DA TESTO A VETTORE        -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="slide">
+  <div class="slide-num">06 / 10</div>
+  <div class="eyebrow">Embedding — come funziona</div>
+  <h2>Da testo a vettore: la pipeline</h2>
+
+  <div class="ep-pipeline">
+    <div class="ep-box ep-box--input">
+      <span class="ep-label">input</span>
+      <span class="ep-content">"database<br>connection string"</span>
+    </div>
+    <span class="ep-arrow-em">→</span>
+    <div class="ep-box">
+      <span class="ep-label">tokenizer</span>
+      <span class="ep-content ep-tokens">
+        <span class="tok">data</span><span class="tok">##base</span><span class="tok">connect</span><span class="tok">##ion</span><span class="tok">string</span>
+      </span>
+    </div>
+    <span class="ep-arrow-em">→</span>
+    <div class="ep-box">
+      <span class="ep-label">transformer (6 layer)</span>
+      <span class="ep-content ep-layers">
+        <span class="ep-lb"></span><span class="ep-lb"></span><span class="ep-lb"></span>
+        <span class="ep-lb"></span><span class="ep-lb"></span><span class="ep-lb"></span>
+      </span>
+    </div>
+    <span class="ep-arrow-em">→</span>
+    <div class="ep-box">
+      <span class="ep-label">mean pooling + L2 normalize</span>
+      <span class="ep-content ep-vec">[ 0.12, −0.34, 0.87,<br>  0.03, −0.51, … <em>×384</em> ]</span>
+    </div>
+  </div>
+
+  <div class="scatter-wrap">
+    <span class="scatter-caption">Proiezione 2D (simulata da 384D) — concetti semanticamente simili si raggruppano</span>
+    <canvas id="scatter"></canvas>
+    <div class="scatter-legend" id="scatterLegend"></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- SLIDE 7 [NUOVA]: SIMILARITÀ COSENO         -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="slide">
+  <div class="slide-num">07 / 10</div>
+  <div class="eyebrow">Embedding — distanza semantica</div>
+  <h2>Similarità coseno — come si misura la vicinanza</h2>
+  <p style="margin-top:0.5rem; color:var(--text-muted); max-width:none;">Non conta la magnitudine del vettore, solo la direzione. Testi diversi in parole ma vicini in significato producono un angolo piccolo → score alto.</p>
+
+  <div class="cosine-layout">
+    <canvas id="cosine-canvas" width="320" height="280"></canvas>
+    <div class="cosine-right">
+      <div class="formula-box">
+        <span class="formula-label">formula</span>
+        <div class="formula">
+          cos(θ) = <span class="frac"><span class="fnum">q · c</span><span class="fden">|q| · |c|</span></span>
+        </div>
+      </div>
+      <div class="cosine-table-wrap">
+        <table class="cosine-table">
+          <thead>
+            <tr><th>Query</th><th>Chunk</th><th>Score</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>database connection</td>
+              <td>psycopg2 connect string</td>
+              <td>
+                <div class="score-cell">
+                  <div class="score-bar" style="width:88px"></div>
+                  <span class="score-val">0.88</span>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>database connection</td>
+              <td>REST API authentication</td>
+              <td>
+                <div class="score-cell">
+                  <div class="score-bar" style="width:42px"></div>
+                  <span class="score-val">0.42</span>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>database connection</td>
+              <td>deploy server config</td>
+              <td>
+                <div class="score-cell">
+                  <div class="score-bar" style="width:13px"></div>
+                  <span class="score-val">0.13</span>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="cosine-note">Il modello ha imparato che "database connection" e "psycopg2 connect string" parlano della stessa cosa — anche senza parole in comune. La ricerca classica LIKE non troverebbe nulla.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SLIDE 8: RICERCA (era 06) -->
+<section class="slide">
+  <div class="slide-num">08 / 10</div>
+  <div class="eyebrow">Runtime</div>
+  <h2>Il flusso di una query</h2>
+  <div class="sf">
+    <div class="sf-step">
+      <div class="sf-num">01</div>
+      <div class="sf-body">
+        <h3>Chiamata MCP da Claude Code</h3>
+        <p><code>kb_search("database connection string")</code> arriva via JSON-RPC su stdio.</p>
+      </div>
+    </div>
+    <div class="sf-step">
+      <div class="sf-num">02</div>
+      <div class="sf-body">
+        <h3>Encoding della query</h3>
+        <p><code>model.encode([query])</code> → vettore float32 × 384. Stesso modello usato in fase di indicizzazione, stesso spazio vettoriale.</p>
+      </div>
+    </div>
+    <div class="sf-step">
+      <div class="sf-num">03</div>
+      <div class="sf-body">
+        <h3>Similarità coseno su tutti i chunk</h3>
+        <p>Tutti i BLOB vengono caricati da SQLite → <code>np.frombuffer(bytes, dtype=float32)</code> → <code>dot(q, c) / (|q|·|c| + ε)</code> per ciascuno dei 242 chunk.</p>
+      </div>
+    </div>
+    <div class="sf-step">
+      <div class="sf-num">04</div>
+      <div class="sf-body">
+        <h3>Top-K ranking &amp; risposta</h3>
+        <p>I chunk ordinati per score decrescente. I top-K (default 5, max 10) tornano come stringa con <code>[file › sezione] (score: 0.842)</code> + contenuto. Claude riceve solo questi.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SLIDE 9: REINDEX (era 07) -->
+<section class="slide">
+  <div class="slide-num">09 / 10</div>
+  <div class="eyebrow">Manutenzione</div>
+  <h2>Auto-reindex basato su mtime</h2>
+  <div class="ri-grid">
+    <div class="ri-block">
+      <h3>All'avvio del server</h3>
+      <ul>
+        <li>Lista tutti i <code>.md</code> nella cartella KB (escluso <code>MEMORY.md</code>)</li>
+        <li>Per ogni file: confronta <code>mtime</code> attuale con <code>mtime</code> salvata in SQLite</li>
+        <li>Se diversa → cancella vecchi chunk → reindicizza</li>
+        <li>Se uguale → skip, zero lavoro aggiuntivo</li>
+      </ul>
+    </div>
+    <div class="ri-block">
+      <h3>Operazioni extra</h3>
+      <ul>
+        <li><strong>Orphan cleanup</strong>: chunk di file eliminati rimossi automaticamente</li>
+        <li><strong>Force reindex</strong>: <code>kb_reindex(force=True)</code> reindicizza tutto</li>
+        <li><strong>Post-edit</strong>: dopo ogni modifica a un <code>.md</code>, Claude chiama <code>kb_reindex()</code></li>
+        <li>Limite noto: un semplice <code>touch</code> triggera reindex non necessario</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">
+    <p>Il server gira come processo persistente per tutta la sessione Claude Code. L'auto-reindex all'avvio garantisce che l'indice sia allineato ai file su disco prima della prima query.</p>
+  </div>
+</section>
+
+<!-- SLIDE 10: TOOL + NUMERI (era 08) -->
+<section class="slide">
+  <div class="slide-num">10 / 10</div>
+  <div class="eyebrow">Interfaccia &amp; stato attuale</div>
+  <h2>I 3 tool MCP esposti</h2>
+  <div class="tool-grid">
+    <div class="tool-card">
+      <h3>kb_search</h3>
+      <span class="sig">( query: str, top_k: int = 5 ) → str</span>
+      <p>Ricerca semantica. Restituisce i chunk più rilevanti con file sorgente, sezione e score di similarità coseno.</p>
+    </div>
+    <div class="tool-card">
+      <h3>kb_reindex</h3>
+      <span class="sig">( force: bool = False ) → str</span>
+      <p>Reindicizza i file modificati (mtime-based). Con <code>force=True</code> reindicizza tutto. Chiamato automaticamente dopo ogni edit alla KB.</p>
+    </div>
+    <div class="tool-card">
+      <h3>kb_stats</h3>
+      <span class="sig">( ) → str</span>
+      <p>Mostra chunk totali, file indicizzati e data di ultimo aggiornamento per ciascun file.</p>
+    </div>
+  </div>
+  <div class="stats-grid">
+    <div class="stat-cell"><strong>242</strong><span>chunk totali</span></div>
+    <div class="stat-cell"><strong>23</strong><span>file .md</span></div>
+    <div class="stat-cell"><strong>384</strong><span>dimensioni float32</span></div>
+    <div class="stat-cell"><strong>~90 MB</strong><span>modello su CPU</span></div>
+    <div class="stat-cell"><strong>&lt; 5 ms</strong><span>latenza query</span></div>
+  </div>
+</section>
+
+<script>
+// ── theme helper ──────────────────────────────────────────────
+function isDark() {
+  var dt = document.documentElement.dataset.theme;
+  if (dt === 'dark') return true;
+  if (dt === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+function colors() {
+  var d = isDark();
+  return {
+    bg:     d ? '#1A2535' : '#FFFFFF',
+    bgPage: d ? '#0F1723' : '#F7F5F0',
+    border: d ? '#2E3F58' : '#DDD8CE',
+    text:   d ? '#DCE4F0' : '#1E2A3A',
+    muted:  d ? '#6E84A3' : '#7A7268',
+    accent: d ? '#E8A825' : '#B8811A',
+    c0:     d ? '#6B9EE8' : '#3A6EC7',  // DB / Connessioni — blu
+    c1:     d ? '#5CC4A0' : '#1E8A63',  // Fleet / GPS — verde
+    c2:     d ? '#E8A825' : '#B8811A',  // API / Endpoint — amber
+    c3:     d ? '#C490E4' : '#7B4FAE',  // Infra / Deploy — viola
+  };
+}
+
+// ── SCATTER CANVAS ────────────────────────────────────────────
+var SCATTER_POINTS = [
+  // DB / Connessioni
+  { x: 0.10, y: 0.72, label: 'db connection', cat: 0 },
+  { x: 0.17, y: 0.62, label: 'tunnel SSH', cat: 0 },
+  { x: 0.06, y: 0.55, label: 'psycopg2 connect', cat: 0 },
+  { x: 0.22, y: 0.78, label: 'MySQL host', cat: 0 },
+  // Entità / Schema
+  { x: 0.80, y: 0.20, label: 'orders table', cat: 1 },
+  { x: 0.88, y: 0.28, label: 'users schema', cat: 1 },
+  { x: 0.74, y: 0.15, label: 'foreign key', cat: 1 },
+  { x: 0.82, y: 0.38, label: 'tenants table', cat: 1 },
+  // API / Endpoint
+  { x: 0.50, y: 0.44, label: 'REST endpoint', cat: 2 },
+  { x: 0.57, y: 0.36, label: 'auth token', cat: 2 },
+  { x: 0.43, y: 0.50, label: 'webhook payload', cat: 2 },
+  // Infra / Deploy
+  { x: 0.68, y: 0.72, label: 'deploy server', cat: 3 },
+  { x: 0.76, y: 0.65, label: 'docker container', cat: 3 },
+  { x: 0.62, y: 0.80, label: 'nginx config', cat: 3 },
+];
+
+var CAT_LABELS = ['DB / Connessioni', 'Entità / Schema', 'API / Endpoint', 'Infra / Deploy'];
+
+function drawScatter() {
+  var canvas = document.getElementById('scatter');
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var rect = canvas.getBoundingClientRect();
+  if (rect.width === 0) return;
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  var W = rect.width, H = rect.height;
+  var c = colors();
+  var catColors = [c.c0, c.c1, c.c2, c.c3];
+
+  // background
+  ctx.fillStyle = c.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // subtle dotted grid
+  ctx.strokeStyle = c.border;
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([2, 6]);
+  for (var gx = 0; gx <= W; gx += W / 8) {
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+  }
+  for (var gy = 0; gy <= H; gy += H / 4) {
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  var pad = 20;
+  var pw = W - pad * 2;
+  var ph = H - pad * 2;
+
+  // cluster halos
+  var clusters = [[],[],[],[]];
+  SCATTER_POINTS.forEach(function(p) { clusters[p.cat].push(p); });
+  clusters.forEach(function(pts, ci) {
+    if (!pts.length) return;
+    var mx = pts.reduce(function(s, p) { return s + p.x; }, 0) / pts.length;
+    var my = pts.reduce(function(s, p) { return s + p.y; }, 0) / pts.length;
+    var cx2 = pad + mx * pw;
+    var cy2 = pad + (1 - my) * ph;
+    var grad = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, 55);
+    grad.addColorStop(0, catColors[ci] + '22');
+    grad.addColorStop(1, catColors[ci] + '00');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, 55, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // points
+  SCATTER_POINTS.forEach(function(p) {
+    var px = pad + p.x * pw;
+    var py = pad + (1 - p.y) * ph;
+    var col = catColors[p.cat];
+
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+
+    ctx.font = '10px Cascadia Code, Consolas, monospace';
+    ctx.fillStyle = c.muted;
+    ctx.fillText(p.label, px + 8, py + 4);
+  });
+
+  // legend
+  buildLegend(catColors);
+}
+
+function buildLegend(catColors) {
+  var leg = document.getElementById('scatterLegend');
+  if (!leg || leg.children.length) return;
+  CAT_LABELS.forEach(function(label, i) {
+    var item = document.createElement('div');
+    item.className = 'leg-item';
+    var dot = document.createElement('div');
+    dot.className = 'leg-dot';
+    dot.style.background = catColors[i];
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(label));
+    leg.appendChild(item);
+  });
+}
+
+// ── COSINE CANVAS ─────────────────────────────────────────────
+function drawCosine() {
+  var canvas = document.getElementById('cosine-canvas');
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.width, H = canvas.height;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  var c = colors();
+
+  ctx.fillStyle = c.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // origin
+  var ox = 54, oy = H - 48;
+  var len = 170;
+
+  // axes
+  ctx.strokeStyle = c.border;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(ox - 8, oy); ctx.lineTo(ox + len + 20, oy); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ox, oy + 8); ctx.lineTo(ox, oy - len - 20); ctx.stroke();
+
+  // axis labels
+  ctx.font = '10px Cascadia Code, Consolas, monospace';
+  ctx.fillStyle = c.muted;
+  ctx.fillText('dim₁', ox + len + 6, oy + 4);
+  ctx.fillText('dim₂', ox - 10, oy - len - 10);
+
+  // vectors: angle in radians from positive X axis
+  var vQuery = { angle: 1.15,  col: c.accent, label: 'query',           len: len };
+  var vA     = { angle: 0.65,  col: c.c1,     label: 'chunk A  0.88',   len: len * 0.95 };
+  var vB     = { angle: 2.55,  col: c.c0,     label: 'chunk B  0.13',   len: len * 0.88 };
+
+  function drawVector(v) {
+    var ex = ox + Math.cos(v.angle) * v.len;
+    var ey = oy - Math.sin(v.angle) * v.len;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ex, ey);
+    ctx.strokeStyle = v.col;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // arrowhead
+    var head = 8, spread = 0.38;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(
+      ex - head * Math.cos(v.angle - spread),
+      ey + head * Math.sin(v.angle - spread)
+    );
+    ctx.lineTo(
+      ex - head * Math.cos(v.angle + spread),
+      ey + head * Math.sin(v.angle + spread)
+    );
+    ctx.closePath();
+    ctx.fillStyle = v.col;
+    ctx.fill();
+    // label
+    var lx = ox + Math.cos(v.angle) * (v.len + 14);
+    var ly = oy - Math.sin(v.angle) * (v.len + 14);
+    ctx.font = '10px Cascadia Code, Consolas, monospace';
+    ctx.fillStyle = v.col;
+    ctx.textAlign = lx > ox ? 'left' : 'right';
+    ctx.fillText(v.label, lx, ly + 4);
+    ctx.textAlign = 'left';
+  }
+
+  // angle arcs between query and each chunk
+  function drawArc(fromAngle, toAngle, r, col, scoreText) {
+    ctx.beginPath();
+    ctx.arc(ox, oy, r, -toAngle, -fromAngle, false);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // score label near arc midpoint
+    var midA = (fromAngle + toAngle) / 2;
+    ctx.font = '9px Cascadia Code, Consolas, monospace';
+    ctx.fillStyle = col;
+    ctx.fillText(scoreText, ox + Math.cos(midA) * (r + 6), oy - Math.sin(midA) * (r + 6));
+  }
+
+  drawArc(vQuery.angle, vA.angle, 34, c.c1, 'θ=28°');
+  drawArc(vA.angle, vB.angle, 50, c.c0, 'θ=96°');
+
+  drawVector(vB);
+  drawVector(vA);
+  drawVector(vQuery);
+
+  // origin dot
+  ctx.beginPath();
+  ctx.arc(ox, oy, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = c.muted;
+  ctx.fill();
+}
+
+// ── init & redraw on theme change ─────────────────────────────
+function drawAll() {
+  drawScatter();
+  drawCosine();
+}
+
+window.addEventListener('DOMContentLoaded', function() {
+  // Use ResizeObserver to draw once the scatter canvas has layout dimensions
+  var ro = new ResizeObserver(function() { drawAll(); });
+  var sc = document.getElementById('scatter');
+  if (sc) ro.observe(sc);
+  drawCosine();
+});
+
+new MutationObserver(function() { drawAll(); })
+  .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+window.matchMedia('(prefers-color-scheme: dark)')
+  .addEventListener('change', function() { drawAll(); });
+
+window.addEventListener('resize', function() { drawAll(); });
+</script>
+</body>
+</html>
