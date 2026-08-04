@@ -8,6 +8,8 @@ MCP server that indexes a folder of `.md` files into a local SQLite vector store
 
 ## Architecture
 
+![Architecture Diagram](docs/diagram.png)
+
 > 📊 **[Interactive diagram →](docs/diagram.html)**
 
 Three components working together:
