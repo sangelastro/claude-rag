@@ -9,7 +9,10 @@ import os
 import sys
 import sqlite3
 
-os.environ.pop("SSL_CERT_FILE", None)
+import certifi
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+os.environ["SSL_CERT_FILE"]      = certifi.where()
+
 from pathlib import Path
 from datetime import datetime
 
@@ -17,9 +20,14 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from mcp.server.mcpserver.server import MCPServer
 
-KB_DIR = Path(os.environ.get("KB_RAG_DIR", str(Path(__file__).parent.parent)))
-DB_PATH = Path(os.environ.get("KB_RAG_DB", str(Path(__file__).parent / "kb.db")))
-MODEL_NAME = "all-MiniLM-L6-v2"
+KB_DIR     = Path(os.environ.get("KB_RAG_DIR", str(Path(__file__).parent.parent)))
+DB_PATH    = Path(os.environ.get("KB_RAG_DB",  str(Path(__file__).parent / "kb.db")))
+MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+
+# max token del modello = 128 → ~400 chars per chunk (stima conservativa per italiano)
+# overlap = 80 chars per preservare contesto tra chunk adiacenti
+CHUNK_MAX_CHARS  = int(os.environ.get("CHUNK_MAX_CHARS",  "400"))
+CHUNK_OVERLAP    = int(os.environ.get("CHUNK_OVERLAP",     "80"))
 
 _model: SentenceTransformer = None
 
@@ -70,15 +78,34 @@ def chunk_file(path: Path) -> list[dict]:
 
     def flush(section, body_lines):
         body = "\n".join(body_lines).strip()
-        if body:
-            header = f"[{path.stem}] {file_title}"
-            if section:
-                header += f" > {section}"
+        if not body:
+            return
+        header = f"[{path.stem}] {file_title}"
+        if section:
+            header += f" > {section}"
+        section_key = section or file_title or path.stem
+
+        if len(body) <= CHUNK_MAX_CHARS:
             chunks.append({
                 "file": path.name,
-                "section": section or file_title or path.stem,
+                "section": section_key,
                 "content": f"{header}\n\n{body}",
             })
+            return
+
+        # sezione lunga: spezza in sub-chunk sovrapposti
+        step = CHUNK_MAX_CHARS - CHUNK_OVERLAP
+        idx = 0
+        part = 1
+        while idx < len(body):
+            slice_text = body[idx: idx + CHUNK_MAX_CHARS]
+            chunks.append({
+                "file": path.name,
+                "section": f"{section_key} [{part}]",
+                "content": f"{header} [{part}]\n\n{slice_text}",
+            })
+            idx += step
+            part += 1
 
     for line in lines[start:]:
         if line.startswith("# ") and not line.startswith("## "):
