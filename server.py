@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Sergio Angelastro — MIT License
 """
 RAG MCP Server
 Indexes .md files by ## section and answers semantic queries.
