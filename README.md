@@ -20,7 +20,7 @@ Three components working together:
 | **② MCP** | Claude calls `kb_search()` → cosine sim on `kb.db` → top-K chunks | explicit semantic search |
 | **③ Hook** | every prompt intercepted → keyword score on `kb_chunks.json` → auto-inject | automatic, ~10ms, no model |
 
-**Stack**: Python · sentence-transformers (`all-MiniLM-L6-v2`, ~90MB, CPU-only) · SQLite · MCP stdio
+**Stack**: Python · sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, ~120MB, CPU-only) · SQLite · MCP stdio
 
 ## Tools exposed
 
@@ -49,7 +49,7 @@ cd ~/.claude/my-kb/rag
 pip install -r requirements.txt
 ```
 
-On first run the model (`all-MiniLM-L6-v2`, ~90MB) is downloaded automatically from HuggingFace.
+On first run the model (`paraphrase-multilingual-MiniLM-L12-v2`, ~120MB) is downloaded automatically from HuggingFace. This model supports 50+ languages including Italian natively.
 
 ### 3. Register in Claude Code
 
@@ -67,6 +67,8 @@ Add to `~/.claude.json` under `mcpServers`:
 
 - **`KB_RAG_DIR`** — folder containing your `.md` files (default: `../` relative to `server.py`)
 - **`KB_RAG_DB`** — SQLite database path (default: `kb.db` next to `server.py`)
+- **`CHUNK_MAX_CHARS`** — max chars per chunk before splitting (default: `400`)
+- **`CHUNK_OVERLAP`** — overlap in chars between consecutive sub-chunks (default: `80`)
 
 If the repo is cloned inside the KB folder (as in the example above), both env vars can be omitted.
 
@@ -134,8 +136,8 @@ rag/
 
 ## How it works
 
-1. **Chunking** — each `.md` file is split on `##` headers; frontmatter is stripped
-2. **Embedding** — chunks are encoded with `all-MiniLM-L6-v2` (384 dimensions)
+1. **Chunking** — each `.md` file is split on `##` headers; frontmatter is stripped; sections longer than `CHUNK_MAX_CHARS` (400) are further split into overlapping sub-chunks with `CHUNK_OVERLAP` (80) chars of context continuity
+2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages)
 3. **Storage** — vectors stored as `float32` BLOBs in SQLite + `kb_chunks.json` for hooks
 4. **Search** — cosine similarity computed in numpy over all chunks; top-K returned
 5. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
@@ -148,6 +150,8 @@ rag/
 | `KB_RAG_DIR` | `../` (relative to `server.py`) | Folder with `.md` files to index |
 | `KB_RAG_DB` | `./kb.db` (next to `server.py`) | SQLite database path |
 | `KB_RAG_NAME` | `kb-rag` | MCP server name |
+| `CHUNK_MAX_CHARS` | `400` | Max chars per chunk; longer sections are split into overlapping sub-chunks |
+| `CHUNK_OVERLAP` | `80` | Overlap chars between adjacent sub-chunks to preserve context continuity |
 
 ## Credits
 
