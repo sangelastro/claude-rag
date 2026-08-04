@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Sergio Angelastro — MIT License
 """
 SessionStart hook: inject KB table of contents at session startup.
 
+Original work by Sergio Angelastro.
 Approach inspired by agd-memory's bootstrap hook:
   github.com/Pinperepette/agd-memory (MIT License)
 Difference: reads from SQLite instead of AGD format.

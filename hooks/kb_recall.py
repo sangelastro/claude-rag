@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Sergio Angelastro — MIT License
 """
 UserPromptSubmit hook: auto-inject relevant KB chunks before each prompt.
 
+Original work by Sergio Angelastro.
 Approach inspired by agd-memory's UserPromptSubmit recall hook:
   github.com/Pinperepette/agd-memory (MIT License)
 Differences:
