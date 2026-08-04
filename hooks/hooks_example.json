@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /ABSOLUTE/PATH/TO/rag/hooks/kb_session_start.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /ABSOLUTE/PATH/TO/rag/hooks/kb_recall.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

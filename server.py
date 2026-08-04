@@ -3,6 +3,7 @@ RAG MCP Server
 Indexes .md files by ## section and answers semantic queries.
 Auto-reindexes on startup when files have been modified.
 """
+import json
 import os
 import sys
 import sqlite3
@@ -126,6 +127,14 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     return len(chunks)
 
 
+def export_chunks_json(conn: sqlite3.Connection) -> None:
+    """Export chunk texts to JSON for the UserPromptSubmit hook (no model needed)."""
+    rows = conn.execute("SELECT file, section, content FROM chunks").fetchall()
+    chunks = [{"file": r[0], "section": r[1], "content": r[2]} for r in rows]
+    json_path = DB_PATH.parent / "kb_chunks.json"
+    json_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=None), encoding="utf-8")
+
+
 def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int]:
     md_files = [p for p in KB_DIR.glob("*.md") if p.name != "MEMORY.md"]
     updated_files = 0
@@ -144,6 +153,7 @@ def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int
         conn.execute("DELETE FROM chunks WHERE file = ?", (orphan,))
     conn.commit()
 
+    export_chunks_json(conn)
     return updated_files, total_chunks
 
 
