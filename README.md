@@ -2,6 +2,8 @@
 
 MCP server that indexes a folder of `.md` files into a local SQLite vector store and exposes semantic search as Claude Code tools.
 
+> **Hook system inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by [@Pinperepette](https://github.com/Pinperepette) (MIT) — see [CREDITS.md](CREDITS.md)**
+
 **Stack**: Python · sentence-transformers (`all-MiniLM-L6-v2`, ~90MB, CPU-only) · SQLite · MCP stdio
 
 ## Tools exposed
