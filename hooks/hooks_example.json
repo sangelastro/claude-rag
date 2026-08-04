@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python /ABSOLUTE/PATH/TO/rag/hooks/kb_session_start.py"
+            "command": "python /absolute/path/to/rag/hooks/kb_session_start.py"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python /ABSOLUTE/PATH/TO/rag/hooks/kb_recall.py",
+            "command": "python /absolute/path/to/rag/hooks/kb_recall.py",
             "timeout": 5
           }
         ]
