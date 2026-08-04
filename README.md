@@ -6,6 +6,18 @@ MCP server that indexes a folder of `.md` files into a local SQLite vector store
 
 > **Hook system** (`hooks/`) inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by [@Pinperepette](https://github.com/Pinperepette) (MIT) — see [CREDITS.md](CREDITS.md)
 
+## Architecture
+
+> 📊 **[Interactive diagram →](docs/diagram.html)**
+
+Three components working together:
+
+| | What | When |
+|---|---|---|
+| **① Indexing** | `.md` files → Chunker → Embedder → SQLite + JSON | on startup / `kb_reindex()` |
+| **② MCP** | Claude calls `kb_search()` → cosine sim on `kb.db` → top-K chunks | explicit semantic search |
+| **③ Hook** | every prompt intercepted → keyword score on `kb_chunks.json` → auto-inject | automatic, ~10ms, no model |
+
 **Stack**: Python · sentence-transformers (`all-MiniLM-L6-v2`, ~90MB, CPU-only) · SQLite · MCP stdio
 
 ## Tools exposed

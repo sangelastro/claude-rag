@@ -1,0 +1,311 @@
+<title>claude-rag — Come funziona</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #090E1A;
+    color: #C8D6E8;
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+
+  .page-title {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: #E2EAF8;
+    letter-spacing: .04em;
+    margin-bottom: 8px;
+    text-align: center;
+  }
+  .page-sub {
+    font-size: 13px;
+    color: #4A6080;
+    margin-bottom: 28px;
+    text-align: center;
+    font-family: ui-monospace, monospace;
+  }
+
+  .diagram-wrap {
+    width: 100%;
+    max-width: 900px;
+  }
+
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    justify-content: center;
+    margin-top: 22px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #7A92B0;
+    font-family: ui-monospace, monospace;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  @media (prefers-color-scheme: light) {
+    body { background: #F0F4FA; color: #1A2A3A; }
+    .page-title { color: #1A2A3A; }
+    .page-sub { color: #7A92B0; }
+    .legend-item { color: #4A5A6A; }
+  }
+  :root[data-theme="light"] {
+    --body-bg: #F0F4FA;
+  }
+</style>
+
+<h1 class="page-title">claude-rag</h1>
+<p class="page-sub">MCP RAG Server for Markdown Knowledge Bases · Sergio Angelastro</p>
+
+<div class="diagram-wrap">
+<svg viewBox="0 0 880 530" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Arrow markers -->
+    <marker id="arr-blue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3B82F6"/>
+    </marker>
+    <marker id="arr-amber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#F59E0B"/>
+    </marker>
+    <marker id="arr-slate" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#64748B"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#10B981"/>
+    </marker>
+    <marker id="arr-violet" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8B5CF6"/>
+    </marker>
+
+    <!-- Gradients -->
+    <linearGradient id="grad-violet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2D1060"/>
+      <stop offset="100%" stop-color="#1A0840"/>
+    </linearGradient>
+    <linearGradient id="grad-slate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#141E2E"/>
+    </linearGradient>
+    <linearGradient id="grad-green" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#064E3B"/>
+      <stop offset="100%" stop-color="#022C22"/>
+    </linearGradient>
+    <linearGradient id="grad-teal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D4A3A"/>
+      <stop offset="100%" stop-color="#053328"/>
+    </linearGradient>
+    <linearGradient id="grad-blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E3A5F"/>
+      <stop offset="100%" stop-color="#0F2040"/>
+    </linearGradient>
+    <linearGradient id="grad-amber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#451A00"/>
+      <stop offset="100%" stop-color="#2D1000"/>
+    </linearGradient>
+    <linearGradient id="grad-indigo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#312E81"/>
+      <stop offset="100%" stop-color="#1E1B4B"/>
+    </linearGradient>
+    <linearGradient id="grad-section-blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0A1628" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#060F1E" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="grad-section-amber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1C0A00" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#0F0500" stop-opacity="0.4"/>
+    </linearGradient>
+
+    <!-- Drop shadow filter -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- ═══════════════════════════════════════ -->
+  <!-- BG SECTION: INDICIZZAZIONE             -->
+  <!-- ═══════════════════════════════════════ -->
+  <rect x="10" y="10" width="860" height="155" rx="12" fill="#0C1520" stroke="#1E3050" stroke-width="1"/>
+
+  <!-- Section label -->
+  <text x="30" y="34" font-family="ui-monospace,monospace" font-size="10" font-weight="700"
+        fill="#4A6080" letter-spacing="2">① INDICIZZAZIONE — all'avvio o su kb_reindex()</text>
+
+  <!-- ── .md FILES ── -->
+  <rect x="28" y="45" width="118" height="100" rx="8" fill="url(#grad-violet)" stroke="#7C3AED" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="87" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#A78BFA">.md files</text>
+  <text x="87" y="93" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#7C5CBF">schema_api.md</text>
+  <text x="87" y="108" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#7C5CBF">reference_db.md</text>
+  <text x="87" y="123" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#7C5CBF">procedures.md</text>
+  <text x="87" y="138" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6048A8">23 file ·  ##  header</text>
+
+  <!-- arrow 1 -->
+  <line x1="146" y1="95" x2="176" y2="95" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr-slate)"/>
+
+  <!-- ── CHUNKER ── -->
+  <rect x="178" y="45" width="128" height="100" rx="8" fill="url(#grad-slate)" stroke="#4B5563" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="242" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#9CA3AF">CHUNKER</text>
+  <text x="242" y="93" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">split per</text>
+  <text x="242" y="108" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#94A3B8">## sezione</text>
+  <text x="242" y="127" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">header contestuale</text>
+  <text x="242" y="140" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#4B5563">frontmatter rimosso</text>
+
+  <!-- arrow 2 -->
+  <line x1="306" y1="95" x2="336" y2="95" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr-slate)"/>
+
+  <!-- ── EMBEDDER ── -->
+  <rect x="338" y="45" width="138" height="100" rx="8" fill="url(#grad-slate)" stroke="#4B5563" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="407" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#9CA3AF">EMBEDDER</text>
+  <text x="407" y="93" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">all-MiniLM-L6-v2</text>
+  <text x="407" y="108" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#94A3B8">384 dimensioni</text>
+  <text x="407" y="127" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">~90MB · solo CPU</text>
+  <text x="407" y="140" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#4B5563">float32 vector</text>
+
+  <!-- fork arrows to storage -->
+  <path d="M476,72 L510,57" stroke="#10B981" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+  <path d="M476,118 L510,128" stroke="#10B981" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+
+  <!-- ── kb.db ── -->
+  <rect x="512" y="38" width="170" height="58" rx="8" fill="url(#grad-green)" stroke="#059669" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="597" y="62" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#34D399">kb.db</text>
+  <text x="597" y="79" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6EE7B7">SQLite · BLOB float32 · cosine sim</text>
+  <text x="597" y="90" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#4B9D80">242 chunk · semantica full</text>
+
+  <!-- ── kb_chunks.json ── -->
+  <rect x="512" y="108" width="170" height="52" rx="8" fill="url(#grad-teal)" stroke="#0D9488" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="597" y="130" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="700" fill="#2DD4BF">kb_chunks.json</text>
+  <text x="597" y="147" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#99F6E4">testo · keyword recall · ~10ms</text>
+
+  <!-- ── export label ── -->
+  <text x="700" y="76" font-family="ui-monospace,monospace" font-size="9" fill="#2D6B50">usato da</text>
+  <text x="700" y="88" font-family="ui-monospace,monospace" font-size="9" fill="#2D6B50">kb_search()</text>
+  <text x="700" y="130" font-family="ui-monospace,monospace" font-size="9" fill="#2D6B50">usato dagli</text>
+  <text x="700" y="142" font-family="ui-monospace,monospace" font-size="9" fill="#2D6B50">hook</text>
+
+  <!-- ═══════════════════════════════════════ -->
+  <!-- RUNTIME: TWO COLUMNS                   -->
+  <!-- ═══════════════════════════════════════ -->
+
+  <!-- Left column BG: MCP -->
+  <rect x="10" y="175" width="424" height="344" rx="12" fill="url(#grad-section-blue)" stroke="#1E3A60" stroke-width="1"/>
+
+  <!-- Right column BG: Hook -->
+  <rect x="446" y="175" width="424" height="344" rx="12" fill="url(#grad-section-amber)" stroke="#451A00" stroke-width="1"/>
+
+  <!-- Section labels -->
+  <text x="30" y="198" font-family="ui-monospace,monospace" font-size="10" font-weight="700"
+        fill="#2563EB" letter-spacing="2">② MCP — RICERCA SEMANTICA (esplicita)</text>
+  <text x="466" y="198" font-family="ui-monospace,monospace" font-size="10" font-weight="700"
+        fill="#D97706" letter-spacing="2">③ HOOK — AUTO-INJECT (ogni prompt)</text>
+
+  <!-- ─── MCP PATH ─── -->
+
+  <!-- Claude (left) -->
+  <rect x="28" y="210" width="140" height="80" rx="8" fill="url(#grad-indigo)" stroke="#6366F1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="98" y="240" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#A5B4FC">Claude Code</text>
+  <text x="98" y="258" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#818CF8">chiama esplicitamente</text>
+  <text x="98" y="272" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#6366F1">kb_search("...")</text>
+
+  <!-- arrow: Claude → server.py -->
+  <path d="M168,250 L210,250" stroke="#3B82F6" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <text x="189" y="244" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#3B82F6">MCP stdio</text>
+
+  <!-- server.py box -->
+  <rect x="212" y="215" width="148" height="70" rx="8" fill="url(#grad-blue)" stroke="#2563EB" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="286" y="238" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" font-weight="700" fill="#60A5FA">server.py</text>
+  <text x="286" y="254" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B82F6">cosine similarity</text>
+  <text x="286" y="268" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B82F6">numpy · top-K chunks</text>
+
+  <!-- arrow: server.py → kb.db (up) -->
+  <path d="M286,215 L286,175 L597,175 L597,97" stroke="#10B981" stroke-width="1.2" stroke-dasharray="4,3" fill="none" marker-end="url(#arr-green)"/>
+  <text x="420" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#10B981">legge embeddings</text>
+
+  <!-- arrow: server.py → results → Claude -->
+  <path d="M212,265 L180,265 L180,295 L168,295" stroke="#3B82F6" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <text x="192" y="282" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#3B82F6">top-K chunks</text>
+
+  <!-- Claude (left) - response received box -->
+  <rect x="28" y="300" width="140" height="55" rx="8" fill="#0F1825" stroke="#4B5563" stroke-width="1" filter="url(#shadow)"/>
+  <text x="98" y="322" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#94A3B8">riceve i chunk</text>
+  <text x="98" y="338" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#94A3B8">più rilevanti</text>
+  <text x="98" y="350" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#4B5563">risponde con contesto corretto</text>
+
+  <!-- stats tools note -->
+  <rect x="28" y="375" width="330" height="60" rx="6" fill="#0A1020" stroke="#1E2A40" stroke-width="1"/>
+  <text x="193" y="395" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#4A6080">Altri tool MCP:</text>
+  <text x="193" y="412" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B5070">kb_reindex() · forza reindicizzazione</text>
+  <text x="193" y="427" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B5070">kb_stats() · chunk per file + timestamp</text>
+
+  <!-- ─── HOOK PATH ─── -->
+
+  <!-- User prompt box -->
+  <rect x="466" y="210" width="130" height="65" rx="8" fill="#1C0F00" stroke="#92400E" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="531" y="233" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" font-weight="700" fill="#FCD34D">utente scrive</text>
+  <text x="531" y="250" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#D97706">"come mi connetto</text>
+  <text x="531" y="264" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#D97706">al db postgres?"</text>
+
+  <!-- arrow: user → hook intercepts -->
+  <path d="M596,243 L640,243" stroke="#F59E0B" stroke-width="1.5" fill="none" marker-end="url(#arr-amber)"/>
+  <text x="618" y="237" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#F59E0B">intercetta</text>
+
+  <!-- kb_recall.py box -->
+  <rect x="642" y="210" width="185" height="100" rx="8" fill="url(#grad-amber)" stroke="#D97706" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="735" y="234" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" font-weight="700" fill="#FCD34D">kb_recall.py</text>
+  <text x="735" y="252" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#F59E0B">tokenizza prompt</text>
+  <text x="735" y="267" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#F59E0B">score = overlap / √len</text>
+  <text x="735" y="282" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#F59E0B">filtro anti-rumore</text>
+  <text x="735" y="298" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#92400E">~10ms · nessun modello AI</text>
+
+  <!-- arrow: kb_recall → kb_chunks.json (up) -->
+  <path d="M735,210 L735,175 L597,175 L597,161" stroke="#0D9488" stroke-width="1.2" stroke-dasharray="4,3" fill="none" marker-end="url(#arr-green)"/>
+  <text x="665" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#0D9488">legge testi</text>
+
+  <!-- arrow: recall → inject → user prompt enriched -->
+  <path d="M642,285 L596,285 L596,310" stroke="#F59E0B" stroke-width="1.5" fill="none" marker-end="url(#arr-amber)"/>
+  <text x="618" y="303" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#F59E0B">inietta chunks</text>
+
+  <!-- Claude enriched (right) -->
+  <rect x="466" y="312" width="130" height="65" rx="8" fill="url(#grad-indigo)" stroke="#6366F1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="531" y="334" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" font-weight="700" fill="#A5B4FC">Claude Code</text>
+  <text x="531" y="350" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#818CF8">riceve prompt</text>
+  <text x="531" y="364" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6366F1">+ contesto KB</text>
+
+  <!-- SessionStart note -->
+  <rect x="466" y="398" width="356" height="75" rx="8" fill="#0A0800" stroke="#451A00" stroke-width="1"/>
+  <text x="644" y="420" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" font-weight="700" fill="#D97706">SessionStart hook</text>
+  <text x="644" y="438" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#92400E">all'avvio: inietta il TOC della KB nel contesto</text>
+  <text x="644" y="453" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#78350F">[KB-RAG] 242 chunks · 23 file · usa kb_search()</text>
+  <text x="644" y="468" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#4A2000">Claude sa cosa c'è disponibile senza chiedere</text>
+
+  <!-- vertical divider between columns -->
+  <line x1="435" y1="185" x2="435" y2="510" stroke="#1E2A3A" stroke-width="1" stroke-dasharray="4,4"/>
+
+</svg>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#7C3AED"></div>.md source files</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>storage (kb.db + kb_chunks.json)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#2563EB"></div>percorso MCP semantico</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#D97706"></div>percorso hook (keyword, no model)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#6366F1"></div>Claude Code</div>
+</div>
