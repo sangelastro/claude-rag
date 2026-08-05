@@ -12,12 +12,17 @@ import sqlite3
 import certifi
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["SSL_CERT_FILE"]      = certifi.where()
+# limita i thread ONNX Runtime per evitare spike CPU che congelano il PC
+os.environ.setdefault("OMP_NUM_THREADS",        "2")
+os.environ.setdefault("ONNX_NUM_THREADS",       "2")
+os.environ.setdefault("ORT_NUM_INTRA_OP_THREADS","2")
+os.environ.setdefault("ORT_NUM_INTER_OP_THREADS","1")
 
 from pathlib import Path
 from datetime import datetime
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from mcp.server.mcpserver.server import MCPServer
 
 KB_DIR     = Path(os.environ.get("KB_RAG_DIR", str(Path(__file__).parent.parent)))
@@ -29,13 +34,30 @@ MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_MAX_CHARS  = int(os.environ.get("CHUNK_MAX_CHARS",  "400"))
 CHUNK_OVERLAP    = int(os.environ.get("CHUNK_OVERLAP",     "80"))
 
-_model: SentenceTransformer = None
+_model: TextEmbedding = None
 
-def get_model() -> SentenceTransformer:
+# cache in-memory degli embedding: caricati una volta all'avvio/reindex
+_emb_matrix: np.ndarray = None   # shape (N, 384)
+_emb_meta: list = None           # lista di {file, section, content}
+
+
+def get_model() -> TextEmbedding:
     global _model
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        _model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     return _model
+
+
+def _load_emb_cache(conn: sqlite3.Connection) -> None:
+    """Carica tutti gli embedding in RAM come numpy matrix. Chiamato all'avvio e dopo reindex."""
+    global _emb_matrix, _emb_meta
+    rows = conn.execute("SELECT file, section, content, embedding FROM chunks").fetchall()
+    if not rows:
+        _emb_matrix = np.zeros((0, 384), dtype=np.float32)
+        _emb_meta = []
+        return
+    _emb_meta = [{"file": r[0], "section": r[1], "content": r[2]} for r in rows]
+    _emb_matrix = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in rows])
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -176,7 +198,7 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         return 0
 
     texts = [c["content"] for c in chunks]
-    embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+    embeddings = np.array(list(model.embed(texts)))
 
     conn.execute("DELETE FROM chunks WHERE file = ?", (path.name,))
     conn.executemany(
@@ -218,36 +240,46 @@ def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int
     conn.commit()
 
     export_chunks_json(conn)
+
+    # invalida il cache in-memory: verrà ricaricato alla prossima ricerca
+    global _emb_matrix, _emb_meta
+    _emb_matrix = None
+    _emb_meta = None
+
     return updated_files, total_chunks
 
 
 # ── SEARCH ────────────────────────────────────────────────────────────────────
 
-def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
-
-
 def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
+    global _emb_matrix, _emb_meta
+
+    # carica cache se non ancora inizializzata
+    if _emb_matrix is None:
+        conn = get_db()
+        _load_emb_cache(conn)
+        conn.close()
+
+    if _emb_matrix.shape[0] == 0:
+        return []
+
     model = get_model()
-    q_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0].astype(np.float32)
+    q_emb = np.array(list(model.embed([query])))[0].astype(np.float32)
 
-    conn = get_db()
-    rows = conn.execute("SELECT file, section, content, embedding FROM chunks").fetchall()
+    # cosine similarity vectorizzata: una sola matrix multiplication
+    norms = np.linalg.norm(_emb_matrix, axis=1)
+    q_norm = float(np.linalg.norm(q_emb))
+    scores = (_emb_matrix @ q_emb) / (norms * q_norm + 1e-9)
 
-    scored = []
-    for file, section, content, emb_bytes in rows:
-        emb = np.frombuffer(emb_bytes, dtype=np.float32)
-        score = cosine_sim(q_emb, emb)
-        scored.append({"file": file, "section": section, "content": content, "score": score})
-
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    results = scored[:top_k]
+    top_idx = np.argsort(scores)[::-1][:top_k]
+    results = [{**_emb_meta[i], "score": float(scores[i])} for i in top_idx]
 
     try:
+        conn = get_db()
         _record_stat(conn, source, query, top_k, results)
+        conn.close()
     except Exception:
         pass
-    conn.close()
 
     return results
 
@@ -390,6 +422,7 @@ if __name__ == "__main__":
 
     conn = get_db()
     updated, chunks = reindex_all(conn)
+    _load_emb_cache(conn)
     conn.close()
 
     if updated:
@@ -397,5 +430,6 @@ if __name__ == "__main__":
     else:
         print("KB RAG: indice aggiornato, nessun file modificato", file=sys.stderr)
 
+    print(f"KB RAG: cache embedding caricato ({len(_emb_meta)} chunk in RAM)", file=sys.stderr)
     print("KB RAG: server pronto", file=sys.stderr)
     mcp.run()
