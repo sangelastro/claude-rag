@@ -21,10 +21,13 @@ import json
 import math
 import os
 import re
+import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CHUNKS_JSON = Path(__file__).parent.parent / "kb_chunks.json"
+DB_PATH     = Path(os.environ.get("KB_RAG_DB", str(Path(__file__).parent / "kb.db")))
 
 TOP_K = int(os.environ.get("KB_RAG_HOOK_TOP_K", "3"))
 MIN_SCORE = float(os.environ.get("KB_RAG_HOOK_MIN_SCORE", "0.15"))
@@ -64,6 +67,33 @@ def score_chunk(query_tokens: set[str], chunk_content: str) -> float:
 def is_code_paste(prompt: str) -> bool:
     stripped = prompt.strip()
     return stripped.startswith("```") or stripped.startswith("    ")
+
+
+def _record_hook_stat(query: str, injected: list[tuple], all_chunks: list[dict]) -> None:
+    """Registra la statistica di risparmio nel DB (fire-and-forget, non blocca il hook)."""
+    try:
+        if not injected or not DB_PATH.exists():
+            return
+        chars_ret = sum(len(c["content"]) for _, c in injected)
+        files_hit = {c["file"] for _, c in injected}
+
+        # baseline: somma chars di tutti i chunk appartenenti ai file toccati
+        chars_full = sum(
+            len(c["content"]) for c in all_chunks if c["file"] in files_hit
+        )
+
+        conn = sqlite3.connect(DB_PATH, timeout=3)
+        conn.execute(
+            "INSERT OR IGNORE INTO search_stats "
+            "(ts, source, query, top_k, chunks_ret, chars_ret, files_hit, chars_full, chars_saved) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (datetime.now().isoformat(), "hook", query[:300], len(injected),
+             len(injected), chars_ret, len(files_hit), chars_full, chars_full - chars_ret)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -109,15 +139,18 @@ def main() -> None:
 
     out_parts = ["[KB auto-context]"]
     chars_used = 0
+    injected = []
     for s, chunk in candidates:
         entry = f"\n--- [{chunk['file']} › {chunk['section']}] ---\n{chunk['content']}"
         if chars_used + len(entry) > TOKEN_BUDGET:
             break
         out_parts.append(entry)
         chars_used += len(entry)
+        injected.append((s, chunk))
 
     if len(out_parts) > 1:
         print("\n".join(out_parts))
+        _record_hook_stat(prompt, injected, chunks)
 
     sys.exit(0)
 

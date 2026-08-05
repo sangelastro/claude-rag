@@ -53,8 +53,44 @@ def get_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file ON chunks(file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_stats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT NOT NULL,
+            source      TEXT NOT NULL,
+            query       TEXT NOT NULL,
+            top_k       INTEGER,
+            chunks_ret  INTEGER,
+            chars_ret   INTEGER,
+            files_hit   INTEGER,
+            chars_full  INTEGER,
+            chars_saved INTEGER
+        )
+    """)
     conn.commit()
     return conn
+
+
+def _record_stat(conn: sqlite3.Connection, source: str, query: str,
+                 top_k: int, results: list[dict]) -> None:
+    if not results:
+        return
+    chars_ret = sum(len(r["content"]) for r in results)
+    files_hit = list({r["file"] for r in results})
+    placeholders = ",".join("?" * len(files_hit))
+    row = conn.execute(
+        f"SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks WHERE file IN ({placeholders})",
+        files_hit
+    ).fetchone()
+    chars_full = row[0]
+    conn.execute(
+        "INSERT INTO search_stats "
+        "(ts, source, query, top_k, chunks_ret, chars_ret, files_hit, chars_full, chars_saved) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (datetime.now().isoformat(), source, query[:300], top_k,
+         len(results), chars_ret, len(files_hit), chars_full, chars_full - chars_ret)
+    )
+    conn.commit()
 
 
 # ── CHUNKING ──────────────────────────────────────────────────────────────────
@@ -191,13 +227,12 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
-def search(query: str, top_k: int = 5) -> list[dict]:
+def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
     model = get_model()
     q_emb = model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0].astype(np.float32)
 
     conn = get_db()
     rows = conn.execute("SELECT file, section, content, embedding FROM chunks").fetchall()
-    conn.close()
 
     scored = []
     for file, section, content, emb_bytes in rows:
@@ -206,7 +241,15 @@ def search(query: str, top_k: int = 5) -> list[dict]:
         scored.append({"file": file, "section": section, "content": content, "score": score})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:top_k]
+    results = scored[:top_k]
+
+    try:
+        _record_stat(conn, source, query, top_k, results)
+    except Exception:
+        pass
+    conn.close()
+
+    return results
 
 
 def format_results(results: list[dict]) -> str:
@@ -269,6 +312,73 @@ def kb_stats() -> str:
     for file, n, mtime in rows:
         ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
         lines.append(f"  {file}: {n} chunk (aggiornato {ts})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def kb_savings() -> str:
+    """
+    Mostra le statistiche di risparmio token del RAG.
+    Confronta i token effettivamente serviti dai chunk vs la lettura completa dei file sorgente.
+    """
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) FROM search_stats").fetchone()[0]
+    if not total:
+        conn.close()
+        return "Nessuna ricerca registrata ancora. Le stats si accumulano durante l'uso."
+
+    agg = conn.execute("""
+        SELECT
+            COUNT(*)            AS searches,
+            SUM(chunks_ret)     AS tot_chunks,
+            SUM(chars_ret)      AS tot_chars_ret,
+            SUM(chars_full)     AS tot_chars_full,
+            SUM(chars_saved)    AS tot_chars_saved,
+            AVG(chunks_ret)     AS avg_chunks,
+            AVG(files_hit)      AS avg_files,
+            MIN(ts)             AS first_ts,
+            MAX(ts)             AS last_ts
+        FROM search_stats
+    """).fetchone()
+
+    by_source = conn.execute("""
+        SELECT source, COUNT(*), SUM(chars_ret), SUM(chars_full), SUM(chars_saved)
+        FROM search_stats
+        GROUP BY source
+        ORDER BY COUNT(*) DESC
+    """).fetchall()
+
+    conn.close()
+
+    searches, tot_chunks, chars_ret, chars_full, chars_saved, avg_chunks, avg_files, first_ts, last_ts = agg
+    chars_ret   = chars_ret   or 0
+    chars_full  = chars_full  or 0
+    chars_saved = chars_saved or 0
+
+    tok_ret   = chars_ret   // 4
+    tok_full  = chars_full  // 4
+    tok_saved = chars_saved // 4
+    pct = (chars_saved / chars_full * 100) if chars_full else 0
+
+    lines = [
+        f"📊 RAG Token Savings — {searches:,} ricerche",
+        f"Periodo: {first_ts[:10]} → {last_ts[:10]}",
+        "",
+        f"  Token serviti dal RAG:        {tok_ret:>10,}",
+        f"  Token senza RAG (stima full): {tok_full:>10,}",
+        f"  ─────────────────────────────────────────",
+        f"  Token risparmiati:            {tok_saved:>10,}  ({pct:.1f}% riduzione)",
+        "",
+        f"  Media per ricerca: {avg_chunks:.1f} chunk da {avg_files:.1f} file",
+        "",
+        "Per sorgente:",
+    ]
+    for source, count, c_ret, c_full, c_saved in by_source:
+        t_saved = (c_saved or 0) // 4
+        t_full  = (c_full  or 0) // 4
+        pct_s   = ((c_saved or 0) / c_full * 100) if c_full else 0
+        lines.append(f"  {source:<8} {count:>5} ricerche  →  {t_saved:>8,} tok saved / {t_full:>8,} baseline  ({pct_s:.0f}%)")
+
     return "\n".join(lines)
 
 
