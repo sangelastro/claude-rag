@@ -29,6 +29,7 @@ Three components working together:
 | `kb_search(query, top_k=5)` | Semantic search — returns top-K chunks with source file and section |
 | `kb_reindex(force=False)` | Re-indexes files modified since last run (mtime-based) |
 | `kb_stats()` | Shows indexed files, chunk counts, last update timestamps |
+| `kb_savings()` | Shows cumulative token savings: RAG chunks served vs full-file baseline, broken down by source (`mcp` / `hook`) |
 
 ## Setup
 
@@ -142,6 +143,7 @@ rag/
 4. **Search** — cosine similarity computed in numpy over all chunks; top-K returned
 5. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
 6. **Invalidation** — mtime-based: only modified files are re-indexed on startup
+7. **Savings tracking** — every search records chars served vs full-file baseline in `search_stats` table; `kb_savings()` aggregates the cumulative token reduction without re-reading any file
 
 ## Environment variables
 
