@@ -534,19 +534,22 @@ def kb_savings() -> str:
 # ── STARTUP ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("KB RAG: caricamento modello...", file=sys.stderr)
-    get_model()  # scarica modello al primo avvio (~80MB)
+    import threading
 
-    conn = get_db()
-    updated, chunks = reindex_all(conn)
-    _load_emb_cache(conn)
-    conn.close()
+    def _background_init():
+        try:
+            get_model()
+            conn = get_db()
+            updated, chunks = reindex_all(conn)
+            _load_emb_cache(conn)
+            conn.close()
+            if updated:
+                print(f"KB RAG: reindicizzati {updated} file ({chunks} chunk)", file=sys.stderr)
+            else:
+                print("KB RAG: indice aggiornato, nessun file modificato", file=sys.stderr)
+            print(f"KB RAG: cache embedding pronto ({len(_emb_meta)} chunk)", file=sys.stderr)
+        except Exception as e:
+            print(f"KB RAG: errore init: {e}", file=sys.stderr)
 
-    if updated:
-        print(f"KB RAG: reindicizzati {updated} file ({chunks} chunk)", file=sys.stderr)
-    else:
-        print("KB RAG: indice aggiornato, nessun file modificato", file=sys.stderr)
-
-    print(f"KB RAG: cache embedding caricato ({len(_emb_meta)} chunk in RAM)", file=sys.stderr)
-    print("KB RAG: server pronto", file=sys.stderr)
+    threading.Thread(target=_background_init, daemon=True).start()
     mcp.run()
