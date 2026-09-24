@@ -10,3 +10,7 @@ venv/
 dist/
 build/
 .tokensave
+
+# eval: gold set e risultati contengono contenuti della KB, non si pubblicano
+eval/gold_set.json
+eval/results.json

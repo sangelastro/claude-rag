@@ -19,5 +19,5 @@ Specifically adapted from agd-memory:
 
 **Key difference**: agd-memory uses keyword overlap for retrieval (no model
 required at hook time). This project uses the same approach for the hooks
-(fast, ~10ms, no model load), while the MCP tool `kb_search` uses full
-semantic search via `sentence-transformers` cosine similarity.
+(fast, ~10ms, no model load), while the MCP tool `kb_search` uses hybrid
+search: BM25 plus embedding cosine similarity, fused with Reciprocal Rank Fusion.

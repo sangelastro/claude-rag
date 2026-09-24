@@ -525,6 +525,7 @@
       <li><a href="#components"><span class="num">03</span> Componenti</a></li>
       <li><a href="#mcp"><span class="num">04</span> Integrazione MCP</a></li>
       <li><a href="#lifecycle"><span class="num">05</span> Lifecycle di una query</a></li>
+      <li><a href="#retrieval"><span class="num">05b</span> Qualità del retrieval</a></li>
       <li><a href="#benchmark"><span class="num">06</span> Benchmark token</a></li>
       <li><a href="#maintenance"><span class="num">07</span> Manutenzione</a></li>
       <li><a href="#filestructure"><span class="num">08</span> Struttura file</a></li>
@@ -538,13 +539,14 @@
       <h1>claude-rag MCP Server</h1>
       <p style="max-width:60ch; color: var(--text2); margin-top:8px;">
         Sistema di Retrieval Augmented Generation per knowledge base in Markdown.
-        Espone una ricerca semantica come tool MCP, permettendo a Claude Code di
+        Espone una ricerca ibrida (BM25 + embedding semantici) come tool MCP, permettendo a Claude Code di
         recuperare solo i chunk rilevanti invece di caricare interi file .md.
       </p>
       <div class="page-meta">
-        <span class="meta-item"><strong>Versione</strong> 1.0</span>
-        <span class="meta-item"><strong>Data</strong> 2026-08-01</span>
-        <span class="meta-item"><strong>Modello embeddings</strong> all-MiniLM-L6-v2</span>
+        <span class="meta-item"><strong>Versione</strong> 1.2</span>
+        <span class="meta-item"><strong>Data</strong> 2026-09-24</span>
+        <span class="meta-item"><strong>Modello embeddings</strong> paraphrase-multilingual-MiniLM-L12-v2</span>
+        <span class="meta-item"><strong>Ricerca</strong> ibrida BM25 + coseno (RRF)</span>
         <span class="meta-item"><strong>Transport</strong> MCP stdio</span>
         <span class="meta-item"><strong>Vector store</strong> SQLite (float32 blob)</span>
       </div>
@@ -597,8 +599,8 @@ POST /auth/token — returns JWT bearer token
 ...</code></pre>
       <h3>Fase 2 — Embedding</h3>
       <p>
-        I chunk vengono codificati con <code>sentence-transformers/all-MiniLM-L6-v2</code>,
-        un modello da ~90MB che gira completamente <strong>in locale su CPU</strong>. Produce
+        I chunk vengono codificati con <code>sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2</code>,
+        un modello da ~120MB che gira completamente <strong>in locale su CPU</strong>. Produce
         vettori a 384 dimensioni.
       </p>
       <h3>Fase 3 — Storage in SQLite</h3>
@@ -631,8 +633,8 @@ POST /auth/token — returns JWT bearer token
         <div class="component-card">
           <span class="card-tag">Storage</span>
           <h3>SQLite + BLOB</h3>
-          <p>Nessuna dipendenza da librerie vettoriali esterne. Similarità coseno calcolata
-          in Python su numpy.</p>
+          <p>Nessuna dipendenza da librerie vettoriali esterne. Embedding e indice BM25
+          (indice invertito) tenuti in RAM; similarità coseno calcolata su numpy.</p>
         </div>
         <div class="component-card">
           <span class="card-tag">Server</span>
@@ -643,7 +645,7 @@ POST /auth/token — returns JWT bearer token
         <div class="component-card">
           <span class="card-tag">Tools MCP</span>
           <h3>3 tool esposti</h3>
-          <p><code>kb_search</code> — ricerca semantica.<br>
+          <p><code>kb_search</code> — ricerca ibrida BM25 + semantica.<br>
           <code>kb_reindex</code> — forza reindicizzazione.<br>
           <code>kb_stats</code> — statistiche indice.</p>
         </div>
@@ -677,9 +679,45 @@ POST /auth/token — returns JWT bearer token
         <li><span class="step-num">01</span><div class="step-body"><strong>Ricezione query</strong><br>Claude Code invia al tool <code>kb_search</code> la stringa di ricerca (es. <em>"database connection string postgresql"</em>).</div></li>
         <li><span class="step-num">02</span><div class="step-body"><strong>Embedding query</strong><br><code>SentenceTransformer.encode(query)</code> produce un vettore float32 × 384. Il modello è già in memoria — tempo tipico &lt;50ms su CPU.</div></li>
         <li><span class="step-num">03</span><div class="step-body"><strong>Caricamento chunk</strong><br>SQLite restituisce tutti i chunk (242). Ogni embedding BLOB viene deserializzato in numpy array.</div></li>
-        <li><span class="step-num">04</span><div class="step-body"><strong>Similarità coseno</strong><br>Per ogni chunk: <code>score = dot(q, c) / (|q| × |c|)</code>. Sorted descending. I top-K (default 5) vengono selezionati.</div></li>
-        <li><span class="step-num">05</span><div class="step-body"><strong>Risposta formattata</strong><br>Il risultato torna a Claude Code come stringa con header <code>[file &gt; sezione]</code>, score e contenuto.</div></li>
+        <li><span class="step-num">04</span><div class="step-body"><strong>Similarità coseno</strong><br>Per ogni chunk: <code>score = dot(q, c) / (|q| × |c|)</code>, una sola moltiplicazione di matrici.</div></li>
+        <li><span class="step-num">05</span><div class="step-body"><strong>BM25</strong><br>In parallelo, lo stesso testo della query viene cercato nell'indice invertito BM25 (<code>k1=1.2, b=0.75</code>): premia i termini esatti e rari, come nomi di tabella, porte e hostname.</div></li>
+        <li><span class="step-num">06</span><div class="step-body"><strong>Fusione RRF</strong><br>I primi 50 di ciascun ranking vengono fusi con Reciprocal Rank Fusion: <code>score = Σ 1 / (60 + posizione)</code>. Conta la posizione, non il punteggio, perché le due scale non sono confrontabili. I top-K (default 5) vengono selezionati.</div></li>
+        <li><span class="step-num">07</span><div class="step-body"><strong>Risposta formattata</strong><br>Il risultato torna a Claude Code come stringa con header <code>[file &gt; sezione]</code>, i tre punteggi (<code>rrf</code>, <code>sem</code>, <code>bm25</code>) e il contenuto. Con <code>KB_SEARCH_MODE=semantic</code> si torna al solo coseno.</div></li>
       </ul>
+    </section>
+
+    <section class="doc-section" id="retrieval">
+      <div class="section-eyebrow">05b — Qualità del retrieval</div>
+      <h2>Perché la ricerca è ibrida</h2>
+      <p>
+        <code>eval/eval_retrieval.py</code> misura quante volte torna la sezione giusta su un gold set
+        di query reali etichettate con <code>file</code> + <code>section</code> corretti, più alcune query
+        senza risposta nella KB. Legge solo <code>kb.db</code> e non scrive in <code>search_stats</code>.
+        Il gold set reale resta locale (gitignored); il formato è in <code>gold_set.example.json</code>.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Ricerca</th><th>Sezione giusta al 1° posto</th><th>nei primi 5</th><th>nei primi 10</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Solo semantica (≤ 1.1.0)</td><td class="cell-mono">0.58</td><td class="cell-warn cell-mono">0.74</td><td class="cell-mono">0.82</td></tr>
+            <tr><td><strong>Ibrida BM25 + semantica (1.2.0)</strong></td><td class="cell-mono">0.64</td><td class="cell-good cell-mono">0.90</td><td class="cell-good cell-mono">1.00</td></tr>
+            <tr><td>Ibrida + reranker cross-encoder (non incluso)</td><td class="cell-mono">0.76</td><td class="cell-mono">0.96</td><td class="cell-mono">0.98</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Le query reali sono piene di identificatori esatti, che il modello di embedding a 128 token confonde;
+        BM25 li trova. Sulle domande in linguaggio naturale invece la semantica resta migliore (0.90 contro 0.80
+        di BM25 da solo). La fusione tiene entrambe.
+      </p>
+      <div class="callout callout-info">
+        <span class="callout-icon">i</span>
+        <p>Misurato su una KB di 5.241 chunk con 50 query con risposta e 7 senza. Il reranker migliora il primo
+        risultato e separa bene le query senza risposta, ma costa circa 3 s per query su CPU: per questo non è
+        nel server.</p>
+      </div>
     </section>
 
     <section class="doc-section" id="benchmark">
@@ -745,7 +783,8 @@ POST /auth/token — returns JWT bearer token
       <div class="file-tree">
 <span class="dir">~/.claude/my-kb/</span>
 ├── <span class="dir">rag/</span>               <span class="comment"># ← questo repo</span>
-│   ├── server.py          <span class="comment"># MCP server — MCPServer + 3 tool</span>
+│   ├── server.py          <span class="comment"># MCP server — MCPServer + tool, ricerca ibrida</span>
+│   ├── <span class="dir">eval/</span>              <span class="comment"># benchmark del retrieval (gold set reale gitignored)</span>
 │   ├── requirements.txt   <span class="comment"># sentence-transformers, mcp, numpy</span>
 │   ├── kb.db              <span class="comment"># SQLite: tabella chunks con BLOB embedding (gitignored)</span>
 │   ├── architecture.html  <span class="comment"># questo file</span>
@@ -759,7 +798,7 @@ POST /auth/token — returns JWT bearer token
       </div>
       <hr class="divider">
       <p style="font-size:12px; color: var(--text3); font-family: var(--mono);">
-        claude-rag MCP Server · v1.0 · 2026-08-01 · github.com/sangelastro/claude-rag
+        claude-rag MCP Server · v1.2 · 2026-09-24 · github.com/sangelastro/claude-rag
       </p>
     </section>
 

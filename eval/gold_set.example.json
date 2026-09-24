@@ -1,0 +1,8 @@
+{
+  "_doc": "Formato del gold set. Copiare in gold_set.json (gitignored) e scrivere query reali sulla propria KB. kind: log = query presa dai log; nl = domanda in linguaggio naturale; neg = risposta NON presente in KB. gold: lista di {file, section}; section = prefisso dell'heading ## (i sub-chunk ' [n]' matchano comunque); section null = basta il file.",
+  "items": [
+    {"id": "L01", "kind": "log", "q": "database orders connessione porta credenziali", "gold": [{"file": "reference_db.md", "section": "Orders DB"}]},
+    {"id": "N01", "kind": "nl", "q": "come si riavvia il worker quando la coda si blocca?", "gold": [{"file": "runbooks.md", "section": "Restart worker"}, {"file": "reference_queues.md", "section": null}]},
+    {"id": "X01", "kind": "neg", "q": "procedura note spese rimborso trasferta", "gold": []}
+  ]
+}

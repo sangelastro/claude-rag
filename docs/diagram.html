@@ -175,9 +175,9 @@
   <!-- ── EMBEDDER ── -->
   <rect x="338" y="45" width="138" height="100" rx="8" fill="url(#grad-slate)" stroke="#4B5563" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="407" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#9CA3AF">EMBEDDER</text>
-  <text x="407" y="93" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">all-MiniLM-L6-v2</text>
+  <text x="407" y="93" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">multilingual-MiniLM-L12</text>
   <text x="407" y="108" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#94A3B8">384 dimensioni</text>
-  <text x="407" y="127" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">~90MB · solo CPU</text>
+  <text x="407" y="127" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6B7280">~120MB · solo CPU</text>
   <text x="407" y="140" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#4B5563">float32 vector</text>
 
   <!-- fork arrows to storage -->
@@ -187,8 +187,8 @@
   <!-- ── kb.db ── -->
   <rect x="512" y="38" width="170" height="58" rx="8" fill="url(#grad-green)" stroke="#059669" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="597" y="62" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#34D399">kb.db</text>
-  <text x="597" y="79" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6EE7B7">SQLite · BLOB float32 · cosine sim</text>
-  <text x="597" y="90" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#4B9D80">242 chunk · semantica full</text>
+  <text x="597" y="79" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#6EE7B7">SQLite · BLOB float32</text>
+  <text x="597" y="90" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#4B9D80">in RAM: embedding + indice BM25</text>
 
   <!-- ── kb_chunks.json ── -->
   <rect x="512" y="108" width="170" height="52" rx="8" fill="url(#grad-teal)" stroke="#0D9488" stroke-width="1.5" filter="url(#shadow)"/>
@@ -213,7 +213,7 @@
 
   <!-- Section labels -->
   <text x="30" y="198" font-family="ui-monospace,monospace" font-size="10" font-weight="700"
-        fill="#2563EB" letter-spacing="2">② MCP — RICERCA SEMANTICA (esplicita)</text>
+        fill="#2563EB" letter-spacing="2">② MCP — RICERCA IBRIDA (esplicita)</text>
   <text x="466" y="198" font-family="ui-monospace,monospace" font-size="10" font-weight="700"
         fill="#D97706" letter-spacing="2">③ HOOK — AUTO-INJECT (ogni prompt)</text>
 
@@ -232,12 +232,12 @@
   <!-- server.py box -->
   <rect x="212" y="215" width="148" height="70" rx="8" fill="url(#grad-blue)" stroke="#2563EB" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="286" y="238" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" font-weight="700" fill="#60A5FA">server.py</text>
-  <text x="286" y="254" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B82F6">cosine similarity</text>
+  <text x="286" y="254" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B82F6">BM25 + coseno · RRF</text>
   <text x="286" y="268" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#3B82F6">numpy · top-K chunks</text>
 
   <!-- arrow: server.py → kb.db (up) -->
   <path d="M286,215 L286,175 L597,175 L597,97" stroke="#10B981" stroke-width="1.2" stroke-dasharray="4,3" fill="none" marker-end="url(#arr-green)"/>
-  <text x="420" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#10B981">legge embeddings</text>
+  <text x="420" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#10B981">legge embedding + testo</text>
 
   <!-- arrow: server.py → results → Claude -->
   <path d="M212,265 L180,265 L180,295 L168,295" stroke="#3B82F6" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
@@ -305,7 +305,7 @@
 <div class="legend">
   <div class="legend-item"><div class="legend-dot" style="background:#7C3AED"></div>.md source files</div>
   <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>storage (kb.db + kb_chunks.json)</div>
-  <div class="legend-item"><div class="legend-dot" style="background:#2563EB"></div>percorso MCP semantico</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#2563EB"></div>percorso MCP ibrido (BM25 + semantica)</div>
   <div class="legend-item"><div class="legend-dot" style="background:#D97706"></div>percorso hook (keyword, no model)</div>
   <div class="legend-item"><div class="legend-dot" style="background:#6366F1"></div>Claude Code</div>
 </div>

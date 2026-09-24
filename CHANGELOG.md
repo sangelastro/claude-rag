@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.0] — 2026-09-24
+
+### Changed
+- **Hybrid search**: `kb_search()` now fuses BM25 (keyword, inverted index) and semantic cosine via Reciprocal Rank Fusion. Measured on a private gold set (50 answerable + 7 unanswerable queries): correct section in top 5 **0.74 → 0.90**, in top 10 **0.82 → 1.00**. Identifier-heavy queries (table names, ports, hostnames) gain most; natural-language queries stay at 0.90.
+- Output shows `rrf`, `sem` and `bm25` per chunk
+- `KB_SEARCH_MODE=semantic` restores the previous behaviour
+
+### Added
+- `eval/`: `eval_retrieval.py` + `gold_set.example.json` (the real gold set and results stay local, gitignored, since they contain KB content) comparing semantic, hook lexical, BM25, hybrid, server and an optional local cross-encoder reranker; never writes to `search_stats`
+- `rank()`: side-effect-free ranking used by `search()` and by the eval
+
+### Docs
+- README, `architecture.html`, `docs/diagram.html` + `diagram.png`, `kb_rag_slides.html` describe the hybrid search; embedding model name corrected to `paraphrase-multilingual-MiniLM-L12-v2`
+
+---
+
 ## [1.1.0] — 2026-08-05
 
 ### Performance

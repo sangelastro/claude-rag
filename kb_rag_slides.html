@@ -425,7 +425,7 @@ tr:last-child td { border-bottom: none; }
         <li>~2 000 token di contesto al massimo</li>
         <li>Risposta immediata e precisa</li>
         <li>Indice aggiornabile via <code>kb_reindex()</code></li>
-        <li>Ricerca semantica: nessuna keyword esatta richiesta</li>
+        <li>Ricerca ibrida: trova sia le parafrasi sia gli identificatori esatti</li>
       </ul>
     </div>
   </div>
@@ -458,7 +458,7 @@ tr:last-child td { border-bottom: none; }
     </div>
   </div>
   <div class="note">
-    <p>Transport: <strong>stdio</strong> — server lanciato come processo figlio. Registrato in <code>~/.claude.json</code> sotto <code>mcpServers</code>. Il modello (<code>all-MiniLM-L6-v2</code>, ~90 MB) è caricato in memoria come singleton al primo avvio.</p>
+    <p>Transport: <strong>stdio</strong> — server lanciato come processo figlio. Registrato in <code>~/.claude.json</code> sotto <code>mcpServers</code>. Il modello (<code>paraphrase-multilingual-MiniLM-L12-v2</code>, ~120 MB) è caricato in memoria come singleton al primo avvio.</p>
   </div>
 </section>
 
@@ -507,7 +507,7 @@ POST /webhooks/register
   <div class="slide-num">05 / 10</div>
   <div class="eyebrow">Indicizzazione</div>
   <h2>Embedding &amp; storage in SQLite</h2>
-  <p style="margin-top:0.6rem; color:var(--text-muted);">Modello: <code>all-MiniLM-L6-v2</code> (sentence-transformers) — 384 dimensioni, gira su CPU, nessun servizio esterno.</p>
+  <p style="margin-top:0.6rem; color:var(--text-muted);">Modello: <code>paraphrase-multilingual-MiniLM-L12-v2</code> (sentence-transformers, 50+ lingue) — 384 dimensioni, gira su CPU, nessun servizio esterno.</p>
   <div class="schema-wrap">
     <table>
       <thead>
@@ -653,15 +653,15 @@ POST /webhooks/register
     <div class="sf-step">
       <div class="sf-num">03</div>
       <div class="sf-body">
-        <h3>Similarità coseno su tutti i chunk</h3>
-        <p>Tutti i BLOB vengono caricati da SQLite → <code>np.frombuffer(bytes, dtype=float32)</code> → <code>dot(q, c) / (|q|·|c| + ε)</code> per ciascuno dei 242 chunk.</p>
+        <h3>Coseno + BM25, fusi con RRF</h3>
+        <p>Embedding in RAM → <code>dot(q, c) / (|q|·|c| + ε)</code> su tutti i chunk; in parallelo BM25 sull'indice invertito premia i termini esatti (tabelle, porte, hostname). I due ranking si fondono per posizione: <code>Σ 1 / (60 + rank)</code>.</p>
       </div>
     </div>
     <div class="sf-step">
       <div class="sf-num">04</div>
       <div class="sf-body">
         <h3>Top-K ranking &amp; risposta</h3>
-        <p>I chunk ordinati per score decrescente. I top-K (default 5, max 10) tornano come stringa con <code>[file › sezione] (score: 0.842)</code> + contenuto. Claude riceve solo questi.</p>
+        <p>I chunk ordinati per score decrescente. I top-K (default 5, max 10) tornano come stringa con <code>[file › sezione] (rrf: 0.0328, sem: 0.662, bm25: 30.4)</code> + contenuto. Claude riceve solo questi.</p>
       </div>
     </div>
   </div>
@@ -706,7 +706,7 @@ POST /webhooks/register
     <div class="tool-card">
       <h3>kb_search</h3>
       <span class="sig">( query: str, top_k: int = 5 ) → str</span>
-      <p>Ricerca semantica. Restituisce i chunk più rilevanti con file sorgente, sezione e score di similarità coseno.</p>
+      <p>Ricerca ibrida BM25 + semantica. Restituisce i chunk più rilevanti con file sorgente, sezione e i punteggi <code>rrf</code>, <code>sem</code>, <code>bm25</code>.</p>
     </div>
     <div class="tool-card">
       <h3>kb_reindex</h3>

@@ -2,7 +2,7 @@
 
 **Author**: [Sergio Angelastro](https://github.com/sangelastro) — MIT License
 
-MCP server that indexes a folder of `.md` files into a local SQLite vector store and exposes semantic search as Claude Code tools. The core RAG system (chunking, embedding, SQLite vector store, MCP server, cosine similarity search) is original work by the author.
+MCP server that indexes a folder of `.md` files into a local SQLite vector store and exposes hybrid search (BM25 keyword + semantic embeddings) as Claude Code tools. The core RAG system (chunking, embedding, SQLite vector store, MCP server, hybrid search, retrieval eval) is original work by the author.
 
 > **Hook system** (`hooks/`) inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by [@Pinperepette](https://github.com/Pinperepette) (MIT) — see [CREDITS.md](CREDITS.md)
 
@@ -17,7 +17,7 @@ Three components working together:
 | | What | When |
 |---|---|---|
 | **① Indexing** | `.md` files → Chunker → Embedder → SQLite + JSON | on startup / `kb_reindex()` |
-| **② MCP** | Claude calls `kb_search()` → cosine sim on `kb.db` → top-K chunks | explicit semantic search |
+| **② MCP** | Claude calls `kb_search()` → BM25 + cosine sim fused with RRF → top-K chunks | explicit hybrid search |
 | **③ Hook** | every prompt intercepted → keyword score on `kb_chunks.json` → auto-inject | automatic, ~10ms, no model |
 
 **Stack**: Python · sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, ~120MB, CPU-only) · SQLite · MCP stdio
@@ -26,7 +26,7 @@ Three components working together:
 
 | Tool | Description |
 |---|---|
-| `kb_search(query, top_k=5)` | Semantic search — returns top-K chunks with source file and section |
+| `kb_search(query, top_k=5)` | Hybrid search (BM25 + semantic, RRF) — returns top-K chunks with source file and section. `KB_SEARCH_MODE=semantic` for cosine only |
 | `kb_reindex(force=False)` | Re-indexes files modified since last run (mtime-based) |
 | `kb_stats()` | Shows indexed files, chunk counts, last update timestamps |
 | `kb_savings()` | Shows cumulative token savings: RAG chunks served vs full-file baseline, broken down by source (`mcp` / `hook`) |
@@ -129,18 +129,21 @@ rag/
 │   ├── kb_session_start.py   # SessionStart hook
 │   ├── kb_recall.py          # UserPromptSubmit hook
 │   └── hooks_example.json    # Hook config template
+├── eval/
+│   ├── eval_retrieval.py       # Retrieval benchmark against a gold set
+│   └── gold_set.example.json   # Gold set format (the real one stays local)
 ├── architecture.html   # Technical documentation
 └── kb_rag_slides.html  # Architecture slide deck
 ```
 
-`kb.db` and `kb_chunks.json` are generated locally and excluded from git.
+`kb.db`, `kb_chunks.json`, `eval/gold_set.json` and `eval/results.json` are generated locally and excluded from git: they contain KB content.
 
 ## How it works
 
 1. **Chunking** — each `.md` file is split on `##` headers; frontmatter is stripped; sections longer than `CHUNK_MAX_CHARS` (400) are further split into overlapping sub-chunks with `CHUNK_OVERLAP` (80) chars of context continuity
 2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages)
 3. **Storage** — vectors stored as `float32` BLOBs in SQLite + `kb_chunks.json` for hooks
-4. **Search** — cosine similarity computed in numpy over all chunks; top-K returned
+4. **Search** — hybrid: BM25 over an in-memory inverted index + cosine similarity in numpy, the two rankings (top 50 each) fused with Reciprocal Rank Fusion; top-K returned. BM25 catches exact identifiers (table names, ports, hostnames) that a 128-token embedding model blurs; embeddings catch paraphrased natural-language questions
 5. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
 6. **Invalidation** — mtime-based: only modified files are re-indexed on startup
 7. **Savings tracking** — every search records chars served vs full-file baseline in `search_stats` table; `kb_savings()` aggregates the cumulative token reduction without re-reading any file
@@ -154,6 +157,26 @@ rag/
 | `KB_RAG_NAME` | `kb-rag` | MCP server name |
 | `CHUNK_MAX_CHARS` | `400` | Max chars per chunk; longer sections are split into overlapping sub-chunks |
 | `CHUNK_OVERLAP` | `80` | Overlap chars between adjacent sub-chunks to preserve context continuity |
+| `KB_SEARCH_MODE` | `hybrid` | `hybrid` (BM25 + semantic, RRF) or `semantic` (cosine only, behaviour up to 1.1.0) |
+
+## Evaluating retrieval
+
+`eval/eval_retrieval.py` measures how often the right section comes back, on a gold set of real queries labelled with their correct `file` + `section`. It compares semantic, hook lexical, BM25, hybrid, the actual `server.rank()` and (optionally) a local cross-encoder reranker. It only reads `kb.db` and never writes to `search_stats`.
+
+```bash
+cp eval/gold_set.example.json eval/gold_set.json   # then write queries about your KB
+py eval/eval_retrieval.py --no-rerank
+```
+
+Include unanswerable queries (`"kind": "neg"`): the script also reports whether a score threshold can tell "not in the KB" apart from a real hit.
+
+Measured on the author's KB (5,241 chunks, 50 answerable + 7 unanswerable queries):
+
+| Retriever | Correct section in top 1 | in top 5 | in top 10 |
+|---|---|---|---|
+| semantic (≤ 1.1.0) | 0.58 | 0.74 | 0.82 |
+| **hybrid (1.2.0)** | 0.64 | 0.90 | **1.00** |
+| hybrid + cross-encoder rerank (not shipped, ~3 s/query on CPU) | 0.76 | 0.96 | 0.98 |
 
 ## Credits
 

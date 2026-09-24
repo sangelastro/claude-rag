@@ -5,9 +5,12 @@ Indexes .md files by ## section and answers semantic queries.
 Auto-reindexes on startup when files have been modified.
 """
 import json
+import math
 import os
+import re
 import sys
 import sqlite3
+from collections import Counter, defaultdict
 
 import certifi
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
@@ -34,11 +37,19 @@ MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_MAX_CHARS  = int(os.environ.get("CHUNK_MAX_CHARS",  "400"))
 CHUNK_OVERLAP    = int(os.environ.get("CHUNK_OVERLAP",     "80"))
 
+# hybrid = BM25 + semantico fusi con RRF (default); semantic = solo coseno (comportamento <= 1.1.0)
+# Scelto su eval/gold_set.json: sec@5 0.74 → 0.90, sec@10 0.82 → 1.00
+SEARCH_MODE = os.environ.get("KB_SEARCH_MODE", "hybrid")
+FUSION_DEPTH = 50   # candidati presi da ciascun ranking prima della fusione
+RRF_K        = 60   # costante standard di Reciprocal Rank Fusion
+BM25_K1, BM25_B = 1.2, 0.75
+
 _model: TextEmbedding = None
 
 # cache in-memory degli embedding: caricati una volta all'avvio/reindex
 _emb_matrix: np.ndarray = None   # shape (N, 384)
 _emb_meta: list = None           # lista di {file, section, content}
+_bm25: "BM25Index" = None        # indice lessicale sugli stessi chunk
 
 
 def get_model() -> TextEmbedding:
@@ -48,16 +59,49 @@ def get_model() -> TextEmbedding:
     return _model
 
 
+class BM25Index:
+    """BM25 su indice invertito. Cattura gli identificatori esatti (nomi di tabella, porte, hostname)
+    che l'embedding MiniLM a 128 token non distingue."""
+
+    def __init__(self, texts: list[str]):
+        self.postings = defaultdict(list)   # term -> [(doc, tf)]
+        lengths = []
+        for i, text in enumerate(texts):
+            tokens = self.tokenize(text)
+            lengths.append(len(tokens))
+            for term, tf in Counter(tokens).items():
+                self.postings[term].append((i, tf))
+        self.n = len(texts)
+        self.lengths = np.array(lengths, dtype=np.float32)
+        avg = float(self.lengths.mean()) if self.n else 1.0
+        self.norm = BM25_K1 * (1 - BM25_B + BM25_B * self.lengths / avg)
+        self.idf = {t: math.log(1 + (self.n - len(p) + 0.5) / (len(p) + 0.5))
+                    for t, p in self.postings.items()}
+
+    @staticmethod
+    def tokenize(text: str) -> list[str]:
+        return re.findall(r"\w{2,}", text.lower())
+
+    def scores(self, query: str) -> np.ndarray:
+        s = np.zeros(self.n, dtype=np.float32)
+        for term in set(self.tokenize(query)):
+            for doc, tf in self.postings.get(term, ()):
+                s[doc] += self.idf[term] * tf * (BM25_K1 + 1) / (tf + self.norm[doc])
+        return s
+
+
 def _load_emb_cache(conn: sqlite3.Connection) -> None:
-    """Carica tutti gli embedding in RAM come numpy matrix. Chiamato all'avvio e dopo reindex."""
-    global _emb_matrix, _emb_meta
+    """Carica embedding e indice BM25 in RAM. Chiamato all'avvio e dopo reindex."""
+    global _emb_matrix, _emb_meta, _bm25
     rows = conn.execute("SELECT file, section, content, embedding FROM chunks").fetchall()
     if not rows:
         _emb_matrix = np.zeros((0, 384), dtype=np.float32)
         _emb_meta = []
+        _bm25 = BM25Index([])
         return
     _emb_meta = [{"file": r[0], "section": r[1], "content": r[2]} for r in rows]
     _emb_matrix = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in rows])
+    _bm25 = BM25Index([m["content"] for m in _emb_meta])
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -242,16 +286,18 @@ def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int
     export_chunks_json(conn)
 
     # invalida il cache in-memory: verrà ricaricato alla prossima ricerca
-    global _emb_matrix, _emb_meta
+    global _emb_matrix, _emb_meta, _bm25
     _emb_matrix = None
     _emb_meta = None
+    _bm25 = None
 
     return updated_files, total_chunks
 
 
 # ── SEARCH ────────────────────────────────────────────────────────────────────
 
-def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
+def rank(query: str, top_k: int = 5, mode: str = None) -> list[dict]:
+    """Ranking puro, senza side effect (usato da search() e da eval/)."""
     global _emb_matrix, _emb_meta
 
     # carica cache se non ancora inizializzata
@@ -269,10 +315,26 @@ def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
     # cosine similarity vectorizzata: una sola matrix multiplication
     norms = np.linalg.norm(_emb_matrix, axis=1)
     q_norm = float(np.linalg.norm(q_emb))
-    scores = (_emb_matrix @ q_emb) / (norms * q_norm + 1e-9)
+    sem = (_emb_matrix @ q_emb) / (norms * q_norm + 1e-9)
 
-    top_idx = np.argsort(scores)[::-1][:top_k]
-    results = [{**_emb_meta[i], "score": float(scores[i])} for i in top_idx]
+    if (mode or SEARCH_MODE) == "semantic":
+        top_idx = np.argsort(sem)[::-1][:top_k]
+        return [{**_emb_meta[i], "score": float(sem[i])} for i in top_idx]
+
+    # hybrid: Reciprocal Rank Fusion dei due ranking (le scale dei punteggi non sono confrontabili)
+    lex = _bm25.scores(query)
+    fused = Counter()
+    for ranking in (np.argsort(sem)[::-1][:FUSION_DEPTH], np.argsort(lex)[::-1][:FUSION_DEPTH]):
+        for pos, i in enumerate(ranking):
+            fused[int(i)] += 1 / (RRF_K + pos + 1)
+    return [
+        {**_emb_meta[i], "score": score, "sem": float(sem[i]), "bm25": float(lex[i])}
+        for i, score in fused.most_common(top_k)
+    ]
+
+
+def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
+    results = rank(query, top_k)
 
     try:
         conn = get_db()
@@ -289,8 +351,12 @@ def format_results(results: list[dict]) -> str:
         return "Nessun risultato trovato nella KB."
     parts = []
     for i, r in enumerate(results, 1):
+        if "bm25" in r:
+            score = f"rrf: {r['score']:.4f}, sem: {r['sem']:.3f}, bm25: {r['bm25']:.1f}"
+        else:
+            score = f"score: {r['score']:.3f}"
         parts.append(
-            f"--- [{r['file']} > {r['section']}] (score: {r['score']:.3f}) ---\n{r['content']}"
+            f"--- [{r['file']} > {r['section']}] ({score}) ---\n{r['content']}"
         )
     return "\n\n".join(parts)
 
@@ -304,8 +370,9 @@ mcp = MCPServer(_server_name)
 @mcp.tool()
 def kb_search(query: str, top_k: int = 5) -> str:
     """
-    Search the knowledge base using semantic similarity.
+    Search the knowledge base (hybrid: BM25 keyword + semantic similarity).
     Returns the most relevant chunks with source file and section.
+    Exact identifiers (table names, ports, hostnames) in the query help ranking.
 
     Args:
         query: Search query (e.g. 'database connection string', 'API authentication')
