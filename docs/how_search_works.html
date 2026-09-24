@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How kb_search Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f6f7fb; --panel: #ffffff; --panel2: #f0f2f8; --ink: #151a2d; --ink2: #4a5270; --ink3: #8a91ab;
+  --line: #dfe3ee; --sem: #7c3aed; --bm: #d97706; --rrf: #2563eb; --rr: #059669; --warn: #dc2626; --ok: #059669;
+  --sem-bg: #f3edff; --bm-bg: #fff5e6; --rrf-bg: #eaf1ff; --rr-bg: #e7f8f1; --warn-bg: #fdecec;
+  --shadow: 0 1px 2px rgba(20,26,45,.06), 0 6px 24px rgba(20,26,45,.06);
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d111c; --panel: #151b2b; --panel2: #1b2336; --ink: #e7eaf4; --ink2: #aab1c8; --ink3: #6c748f;
+    --line: #273047; --sem-bg: #241a3d; --bm-bg: #2e2210; --rrf-bg: #13213f; --rr-bg: #0f2a22; --warn-bg: #351516;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d111c; --panel: #151b2b; --panel2: #1b2336; --ink: #e7eaf4; --ink2: #aab1c8; --ink3: #6c748f;
+  --line: #273047; --sem-bg: #241a3d; --bm-bg: #2e2210; --rrf-bg: #13213f; --rr-bg: #0f2a22; --warn-bg: #351516;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 Inter, system-ui, sans-serif; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 16px 80px; }
+h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
+h2 { font-size: 22px; margin: 56px 0 6px; letter-spacing: -.01em; }
+.lede { color: var(--ink2); max-width: 70ch; margin: 0; font-size: 16px; }
+.sub { color: var(--ink2); margin: 0 0 18px; max-width: 72ch; }
+code, .mono { font-family: var(--mono); font-size: .9em; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+
+/* ── overview strip ───────────────────────────── */
+.flow { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 10px; margin-top: 28px; }
+.node { padding: 12px 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); position: relative; }
+.node b { display: block; font-size: 13px; }
+.node span { font-size: 12px; color: var(--ink2); }
+.node .t { font-family: var(--mono); font-size: 11px; color: var(--ink3); margin-top: 4px; display: block; }
+.node::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--c, var(--ink3)); }
+.node + .node::after { content: "→"; position: absolute; left: -10px; top: 50%; transform: translate(-50%,-50%); color: var(--ink3); font-size: 13px; }
+@media (max-width: 760px) { .flow { grid-template-columns: repeat(2, minmax(0,1fr)); } .node + .node::after { display: none; } }
+
+/* ── stepper ───────────────────────────────────── */
+.demo { padding: 20px; margin-top: 18px; }
+.qrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.qbtn { border: 1px solid var(--line); background: var(--panel2); color: var(--ink); border-radius: 999px; padding: 7px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.qbtn[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.qbtn small { display: block; font-size: 11px; opacity: .7; }
+.query { margin: 16px 0 4px; font-family: var(--mono); font-size: 15px; padding: 12px 14px; border-radius: 10px; background: var(--panel2); border: 1px dashed var(--line); overflow-wrap: anywhere; }
+.steps { display: flex; gap: 6px; margin: 16px 0 12px; flex-wrap: wrap; }
+.step { flex: 1 1 120px; border: 0; border-radius: 10px; padding: 9px 10px; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; background: var(--panel2); color: var(--ink2); border-top: 3px solid transparent; }
+.step[aria-current="step"] { background: var(--panel); color: var(--ink); border-top-color: var(--c); box-shadow: var(--shadow); font-weight: 600; }
+.step i { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--ink3); display: block; }
+.explain { min-height: 48px; color: var(--ink2); margin: 4px 0 14px; max-width: 80ch; }
+.stage { display: grid; gap: 14px; }
+.cols2 { grid-template-columns: 1fr 1fr; }
+@media (max-width: 760px) { .cols2 { grid-template-columns: 1fr; } }
+.col h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--c); }
+.list { position: relative; }
+.item { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 6px; transition: transform .6s cubic-bezier(.2,.8,.2,1), opacity .4s, background .4s; }
+.item.gold { border-color: var(--ok); box-shadow: inset 3px 0 0 var(--ok); }
+.item .rk { font-family: var(--mono); font-size: 12px; color: var(--ink3); text-align: right; }
+.item .ttl { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .ttl em { font-style: normal; color: var(--ink3); font-family: var(--mono); font-size: 11.5px; }
+.item .sc { font-family: var(--mono); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.bar { height: 6px; border-radius: 4px; background: var(--c); opacity: .85; transition: width .6s; }
+.legend-gold { font-size: 12px; color: var(--ink2); margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+.legend-gold::before { content: ""; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--ok); box-shadow: inset 3px 0 0 var(--ok); }
+.navrow { display: flex; justify-content: space-between; margin-top: 14px; }
+.nav { border: 1px solid var(--line); background: var(--panel2); color: var(--ink); border-radius: 9px; padding: 8px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.nav:disabled { opacity: .4; cursor: default; }
+
+/* confidence stage */
+.confbox { display: grid; grid-template-columns: 260px 1fr; gap: 18px; align-items: center; }
+@media (max-width: 760px) { .confbox { grid-template-columns: 1fr; } }
+.out { font-family: var(--mono); font-size: 12.5px; padding: 14px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+.out .w { color: var(--warn); font-weight: 600; }
+.out .g { color: var(--ok); font-weight: 600; }
+
+/* ── cards ─────────────────────────────────────── */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.card { padding: 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--c); }
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+.card p { margin: 0 0 8px; color: var(--ink2); font-size: 13.5px; }
+.card .ex { font-family: var(--mono); font-size: 11.5px; color: var(--ink3); }
+
+/* ── charts ────────────────────────────────────── */
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
+.chart { padding: 18px; }
+.chart h3 { margin: 0 0 2px; font-size: 15px; }
+.chart p { margin: 0 0 10px; color: var(--ink2); font-size: 13px; }
+svg text { fill: var(--ink2); font-family: Inter, system-ui, sans-serif; }
+.note { font-size: 12.5px; color: var(--ink3); margin-top: 8px; }
+.latency { display: flex; height: 34px; border-radius: 8px; overflow: hidden; margin: 10px 0 8px; border: 1px solid var(--line); }
+.latency div { display: flex; align-items: center; justify-content: center; font-size: 11.5px; color: #fff; white-space: nowrap; overflow: hidden; }
+.caveat { padding: 16px 18px; border-left: 3px solid var(--bm); background: var(--bm-bg); border-radius: 0 12px 12px 0; color: var(--ink2); font-size: 14px; }
+.caveat b { color: var(--ink); }
+.theme { position: fixed; top: 12px; right: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<button class="theme" id="theme" type="button">◐ Theme</button>
+<div class="wrap">
+
+<h1>How <code>kb_search</code> finds an answer</h1>
+<p class="lede">Every search goes through two rankings run in parallel, a merge step and a local "judge" model that re-reads the best candidates. At the end the judge says how confident it is that the answer is really in the knowledge base.</p>
+
+<div class="flow" aria-label="Pipeline overview">
+  <div class="node" style="--c:var(--ink3)"><b>Query</b><span>free text or identifiers</span></div>
+  <div class="node" style="--c:var(--sem)"><b>Semantic</b><span>meaning, via embeddings</span><span class="t">~10 ms</span></div>
+  <div class="node" style="--c:var(--bm)"><b>BM25</b><span>exact words, rare terms</span><span class="t">~5 ms</span></div>
+  <div class="node" style="--c:var(--rrf)"><b>RRF merge</b><span>best 10 of both lists</span><span class="t">&lt;1 ms</span></div>
+  <div class="node" style="--c:var(--rr)"><b>Reranker</b><span>reads query + chunk together</span><span class="t">~400 ms</span></div>
+  <div class="node" style="--c:var(--ok)"><b>Confidence</b><span>"is the answer here?"</span><span class="t">calibrated</span></div>
+</div>
+
+<h2>Walk through it</h2>
+<p class="sub">Pick a question, then step through the stages. The green outline marks the chunk that actually answers it. The knowledge base and scores here are an illustrative example; the charts further down are real measurements.</p>
+
+<div class="panel demo">
+  <div class="qrow" id="qrow"></div>
+  <div class="query" id="query"></div>
+  <div class="steps" id="steps"></div>
+  <p class="explain" id="explain"></p>
+  <div id="stage"></div>
+  <div class="navrow">
+    <button class="nav" id="prev" type="button">← Back</button>
+    <button class="nav" id="next" type="button">Next →</button>
+  </div>
+</div>
+
+<h2>Why each stage is there</h2>
+<p class="sub">Each stage fixes a specific weakness of the one before it.</p>
+<div class="cards">
+  <div class="card" style="--c:var(--sem)"><h3>Semantic search</h3><p>Turns the question and every chunk into vectors and compares their meaning. It finds paraphrases with no words in common.</p><p>Weak spot: it blurs exact identifiers such as table names, ports and hostnames.</p><div class="ex">"worker stuck" ≈ "queue not draining"</div></div>
+  <div class="card" style="--c:var(--bm)"><h3>BM25</h3><p>Classic keyword scoring: a chunk ranks high if it contains the query's words, especially rare ones.</p><p>Weak spot: no words in common means no match.</p><div class="ex">"orders_db" → the one chunk that says orders_db</div></div>
+  <div class="card" style="--c:var(--rrf)"><h3>RRF merge</h3><p>Reciprocal Rank Fusion merges the two lists by <em>position</em>, not score, because the two scales can't be compared: <code>Σ 1/(60 + rank)</code>.</p><p>A chunk near the top of either list survives.</p><div class="ex">top 10 kept for the next stage</div></div>
+  <div class="card" style="--c:var(--rr)"><h3>Reranker</h3><p>A small cross-encoder reads each (question, chunk) pair <em>together</em> and scores how well the chunk answers it. It generates no text, which is the same idea as a "System One" model like Jev.</p><p>It runs locally, so no chunk leaves the machine.</p><div class="ex">mmarco-mMiniLMv2 · ONNX int8 · Apache-2.0</div></div>
+  <div class="card" style="--c:var(--ok)"><h3>Calibrated confidence</h3><p>The best reranker score becomes a probability via Platt scaling: <code>p = σ(0.392·s + 0.356)</code>. "0.8" means right about 80% of the time.</p><p>Below 0.5, <code>kb_search</code> warns that the answer is probably not in the KB.</p><div class="ex">fitted with 5-fold cross-validation</div></div>
+</div>
+
+<h2>What it changed, measured</h2>
+<p class="sub">Measured today on the real knowledge base: 5,241 chunks, 50 questions with a known answer and 7 with no answer in the KB.</p>
+<div class="charts">
+  <div class="panel chart">
+    <h3>How often the right section comes back</h3>
+    <p>Share of the 50 questions whose correct section is at rank 1, or within the first 5.</p>
+    <svg id="bars" viewBox="0 0 460 250" width="100%" role="img" aria-label="Accuracy by version"></svg>
+  </div>
+  <div class="panel chart">
+    <h3>Can it tell "not in the KB" apart?</h3>
+    <p>Each dot is one question, placed by the reranker's best score. The curve turns that score into confidence.</p>
+    <svg id="conf" viewBox="0 0 460 250" width="100%" role="img" aria-label="Confidence calibration"></svg>
+  </div>
+</div>
+
+<div class="panel chart" style="margin-top:14px">
+  <h3>Where the time goes</h3>
+  <p>One search, end to end, on CPU. The reranker is almost all of it, and it is what buys the precision.</p>
+  <div class="latency">
+    <div style="flex:0 0 auto;padding:0 8px;background:var(--sem)" title="embedding, ~10 ms">embed</div>
+    <div style="flex:0 0 auto;padding:0 8px;background:var(--bm)" title="BM25, ~5 ms">bm25</div>
+    <div style="flex:400;background:var(--rr)">reranker · ~400 ms for 10 chunks</div>
+  </div>
+  <div class="note">The first two segments are drawn wider than their real share (~15 ms together) so they stay readable. Before: ~15 ms, but the right section was at rank 1 only 64% of the time and there was no way to say "not found". <code>KB_RERANK=off</code> brings the fast version back.</div>
+</div>
+
+<h2>Honest limits</h2>
+<div class="caveat">
+  <b>57 questions is a small sample.</b> The numbers are good evidence, not a guarantee. In the confidence chart, three questions (the red dots on the right) scored high even though the right section wasn't in the top 5: the model can still be <b>confidently wrong</b>, just much more rarely than before. The 7 questions with no answer all ended up below the warning threshold.
+</div>
+
+</div>
+
+<script>
+// ── illustrative example (invented KB) ─────────────────────────────────────
+const CHUNKS = {
+  db:   ["reference_db.md", "orders_db — connection, port 5433, readonly user"],
+  dbg:  ["reference_db.md", "Database overview"],
+  sch:  ["schema_orders.md", "orders table — columns"],
+  wrk:  ["runbooks.md", "Restart the worker when the queue is stuck"],
+  inc:  ["incidents.md", "2026-05 queue outage — timeline"],
+  q:    ["reference_queues.md", "Queue names and consumers"],
+  api:  ["reference_api.md", "Auth endpoint and tokens"],
+  srv:  ["reference_servers.md", "Worker hosts and ports"],
+  bkp:  ["runbooks.md", "Nightly backup job"],
+  mon:  ["monitoring.md", "Alert thresholds"],
+  dep:  ["runbooks.md", "Deploy procedure"],
+};
+// for each example: semantic order, bm25 order, reranker scores, the answer
+const EXAMPLES = [
+  { id: "ident", label: "Identifier query", hint: "exact names", q: "orders_db port 5433 readonly user",
+    sem: ["dbg","sch","srv","api","db","bkp"], bm: ["db","srv","dbg","sch","api","mon"],
+    rr: { db: 9.1, dbg: 2.4, sch: 0.8, srv: 1.9, api: -2.2, bkp: -3.5, mon: -4.1 }, gold: "db",
+    why: ["Full of identifiers. The embedding model sees \"a database question\" and puts a generic chunk first; the right one only reaches #5.",
+          "BM25 matches the rare words orders_db and 5433 exactly and puts the right chunk first."] },
+  { id: "nl", label: "Natural-language question", hint: "a paraphrase", q: "how do I get the worker going again when jobs pile up?",
+    sem: ["wrk","inc","q","srv","mon","dep"], bm: ["srv","dep","wrk","bkp","q","inc"],
+    rr: { wrk: 8.3, inc: 3.0, q: 1.2, srv: -0.6, mon: -2.8, dep: -3.1, bkp: -4.4 }, gold: "wrk",
+    why: ["No exact words to match, but the meaning is clear: semantic search puts \"Restart the worker when the queue is stuck\" first.",
+          "BM25 only sees the common word \"worker\" and ranks a server list above the runbook."] },
+  { id: "neg", label: "Not in the KB", hint: "should say so", q: "Kafka consumer group lag monitoring",
+    sem: ["q","mon","inc","wrk","srv","dep"], bm: ["mon","q","wrk","inc","api","bkp"],
+    rr: { q: -3.3, mon: -3.9, inc: -5.2, wrk: -4.6, srv: -6.0, dep: -6.4, api: -6.9, bkp: -7.1 }, gold: null,
+    why: ["The KB has nothing about Kafka. Semantic search still returns the closest things it has: queues, monitoring.",
+          "BM25 matches \"consumer\" and \"monitoring\". Both lists look plausible, and the old kb_search would have returned them with no warning."] },
+];
+const STEPS = [
+  { key: "query", name: "Query", c: "var(--ink3)" },
+  { key: "two", name: "Two rankings", c: "var(--sem)" },
+  { key: "rrf", name: "RRF merge", c: "var(--rrf)" },
+  { key: "rr", name: "Reranker", c: "var(--rr)" },
+  { key: "conf", name: "Confidence", c: "var(--ok)" },
+];
+const platt = s => 1 / (1 + Math.exp(-(0.392 * s + 0.356)));
+let ex = EXAMPLES[0], step = 0;
+
+function rrf(e) {
+  const f = {};
+  [e.sem, e.bm].forEach(list => list.forEach((id, i) => { f[id] = (f[id] || 0) + 1 / (60 + i + 1); }));
+  return Object.entries(f).sort((a, b) => b[1] - a[1]).slice(0, 6);
+}
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+function item(id, rank, score, color, width) {
+  const [file, sec] = CHUNKS[id];
+  return `<div class="item${id === ex.gold ? " gold" : ""}" data-id="${id}">
+    <span class="rk">#${rank}</span>
+    <span class="ttl">${esc(sec)} <em>${file}</em></span>
+    <span class="sc" style="--c:${color}">${width != null ? `<span class="bar" style="width:${width}px"></span>` : ""}${score}</span></div>`;
+}
+
+function render() {
+  document.querySelectorAll(".qbtn").forEach(b => b.setAttribute("aria-pressed", b.dataset.id === ex.id));
+  document.getElementById("query").textContent = "kb_search(\"" + ex.q + "\")";
+  document.querySelectorAll(".step").forEach((b, i) => b.toggleAttribute("aria-current", i === step) || (i === step && b.setAttribute("aria-current", "step")));
+  document.querySelectorAll(".step").forEach((b, i) => { if (i === step) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current"); });
+  document.getElementById("prev").disabled = step === 0;
+  document.getElementById("next").disabled = step === STEPS.length - 1;
+  const st = document.getElementById("stage"), exp = document.getElementById("explain");
+  const k = STEPS[step].key;
+
+  if (k === "query") {
+    exp.textContent = "Claude calls the tool with a question. It can be a keyword-heavy lookup, a question in plain language, or something the KB simply doesn't contain.";
+    st.innerHTML = `<div class="stage"><div class="out">${ex.id === "ident" ? "Lots of exact tokens: a table name, a port number." : ex.id === "nl" ? "Plain language: none of these words appear in the chunk that answers it." : "A real-sounding question, but the KB has no answer for it."}</div></div>`;
+  }
+  if (k === "two") {
+    exp.innerHTML = `${esc(ex.why[0])}<br>${esc(ex.why[1])}`;
+    st.innerHTML = `<div class="stage cols2">
+      <div class="col" style="--c:var(--sem)"><h4>Semantic (embeddings)</h4><div class="list">${ex.sem.map((id, i) => item(id, i + 1, "", "var(--sem)", null)).join("")}</div></div>
+      <div class="col" style="--c:var(--bm)"><h4>BM25 (keywords)</h4><div class="list">${ex.bm.map((id, i) => item(id, i + 1, "", "var(--bm)", null)).join("")}</div></div>
+    </div>${ex.gold ? '<div class="legend-gold">the chunk that actually answers the question</div>' : ""}`;
+  }
+  if (k === "rrf") {
+    const f = rrf(ex), max = f[0][1];
+    exp.textContent = "The two lists are merged by position. A chunk that ranks well in either list moves up, one that ranks well in both moves up more. The best 10 go on (6 shown here).";
+    st.innerHTML = `<div class="stage"><div class="col" style="--c:var(--rrf)"><h4>Merged — score = Σ 1/(60 + rank)</h4><div class="list">${
+      f.map(([id, s], i) => item(id, i + 1, s.toFixed(4), "var(--rrf)", Math.round(60 * s / max))).join("")}</div></div></div>`;
+  }
+  if (k === "rr") {
+    const ids = rrf(ex).map(([id]) => id);
+    const sorted = ids.slice().sort((a, b) => ex.rr[b] - ex.rr[a]);
+    exp.textContent = ex.gold
+      ? "The reranker reads the question and each candidate together and gives each a relevance score. The chunk that really answers it moves to the top, with a clear gap."
+      : "The reranker reads every candidate and none of them actually answers the question: every score is negative.";
+    st.innerHTML = `<div class="stage"><div class="col" style="--c:var(--rr)"><h4>Reranked — cross-encoder score</h4><div class="list" id="rrlist">${
+      ids.map((id, i) => item(id, i + 1, ex.rr[id].toFixed(1), "var(--rr)", Math.max(2, Math.round(6 * (ex.rr[id] + 8))))).join("")}</div></div></div>`;
+    // animate the reorder (FLIP)
+    requestAnimationFrame(() => {
+      const list = document.getElementById("rrlist"), els = [...list.children];
+      const first = new Map(els.map(el => [el.dataset.id, el.getBoundingClientRect().top]));
+      sorted.forEach((id, i) => { const el = els.find(x => x.dataset.id === id); el.querySelector(".rk").textContent = "#" + (i + 1); list.appendChild(el); });
+      els.forEach(el => { const dy = first.get(el.dataset.id) - el.getBoundingClientRect().top; el.style.transition = "none"; el.style.transform = `translateY(${dy}px)`; });
+      requestAnimationFrame(() => setTimeout(() => els.forEach(el => { el.style.transition = ""; el.style.transform = ""; }), 350));
+    });
+  }
+  if (k === "conf") {
+    const ids = rrf(ex).map(([id]) => id).sort((a, b) => ex.rr[b] - ex.rr[a]);
+    const top = ex.rr[ids[0]], p = platt(top), low = p < 0.5;
+    exp.textContent = low
+      ? "The best score is turned into a probability. It is below 0.5, so kb_search opens with a warning instead of silently returning plausible-looking noise."
+      : "The best score is turned into a probability that the answer is among the results. It is well above 0.5, so the results are returned as reliable.";
+    const [file, sec] = CHUNKS[ids[0]];
+    st.innerHTML = `<div class="stage confbox">
+      <div>${gauge(p)}</div>
+      <div class="out">${low
+        ? `<span class="w">⚠️ Confidenza bassa (${p.toFixed(2)}): probabilmente la risposta NON è nella KB.</span>\n\n--- [${file} > ${esc(sec)}] (rerank: ${top.toFixed(2)}, …) ---`
+        : `<span class="g">Confidenza: ${p.toFixed(2)}</span>\n\n--- [${file} > ${esc(sec)}] (rerank: ${top.toFixed(2)}, …) ---\n…`}</div></div>`;
+  }
+}
+
+function gauge(p) {
+  const a = Math.PI * (1 - p), x = 110 + 80 * Math.cos(a), y = 110 - 80 * Math.sin(a);
+  const col = p < 0.5 ? "var(--warn)" : "var(--ok)";
+  const big = 0, end = `${x.toFixed(1)} ${y.toFixed(1)}`;
+  return `<svg viewBox="0 0 220 140" width="100%" style="max-width:260px" role="img" aria-label="confidence ${p.toFixed(2)}">
+    <path d="M30 110 A80 80 0 0 1 190 110" fill="none" stroke="var(--line)" stroke-width="16" stroke-linecap="round"/>
+    <path d="M30 110 A80 80 0 ${big} 1 ${end}" fill="none" stroke="${col}" stroke-width="16" stroke-linecap="round"/>
+    <line x1="110" y1="22" x2="110" y2="40" stroke="var(--ink3)" stroke-width="2"/>
+    <text x="110" y="16" text-anchor="middle" font-size="10">0.5 threshold</text>
+    <text x="110" y="100" text-anchor="middle" font-size="30" font-weight="700" style="fill:${col}">${p.toFixed(2)}</text>
+    <text x="110" y="126" text-anchor="middle" font-size="11">confidence</text></svg>`;
+}
+
+function build() {
+  document.getElementById("qrow").innerHTML = EXAMPLES.map(e =>
+    `<button class="qbtn" type="button" data-id="${e.id}" aria-pressed="false">${e.label}<small>${e.hint}</small></button>`).join("");
+  document.getElementById("steps").innerHTML = STEPS.map((s, i) =>
+    `<button class="step" type="button" style="--c:${s.c}" data-i="${i}"><i>${i + 1}/${STEPS.length}</i>${s.name}</button>`).join("");
+  document.querySelectorAll(".qbtn").forEach(b => b.onclick = () => { ex = EXAMPLES.find(e => e.id === b.dataset.id); step = 0; render(); });
+  document.querySelectorAll(".step").forEach(b => b.onclick = () => { step = +b.dataset.i; render(); });
+  document.getElementById("prev").onclick = () => { step = Math.max(0, step - 1); render(); };
+  document.getElementById("next").onclick = () => { step = Math.min(STEPS.length - 1, step + 1); render(); };
+  render();
+}
+
+// ── real measurements ─────────────────────────────────────────────────────────
+const SUMMARY = [
+  { name: "semantic (before)", top1: 0.56, top5: 0.74 },
+  { name: "hybrid", top1: 0.64, top5: 0.90 },
+  { name: "hybrid + reranker", top1: 0.82, top5: 0.94 },
+];
+// [best reranker score, answer found in top 5, kind] — one per question, no content
+const POINTS = [[8.42,0,"log"],[6.86,1,"log"],[2.08,1,"log"],[7.7,1,"log"],[3.85,1,"log"],[7.83,1,"log"],[4.67,1,"log"],[4.49,1,"log"],[5.22,0,"log"],[10.23,1,"log"],[6.55,1,"log"],[6.55,1,"log"],[6.17,1,"log"],[7.53,1,"log"],[10.55,1,"log"],[4.62,1,"log"],[9.4,1,"log"],[4.29,1,"log"],[6.67,1,"log"],[2.69,1,"log"],[-0.03,1,"log"],[8.33,1,"log"],[-0.37,1,"log"],[6.13,1,"log"],[6.66,0,"log"],[3.18,1,"log"],[10.9,1,"log"],[10.06,1,"log"],[7.59,1,"log"],[10.39,1,"log"],[7.47,1,"log"],[5.31,1,"log"],[6.43,1,"log"],[2.11,1,"log"],[4.61,1,"log"],[9.12,1,"log"],[6.86,1,"log"],[10.27,1,"log"],[0.86,1,"log"],[10.89,1,"log"],[4.37,1,"nl"],[6.52,1,"nl"],[1.42,1,"nl"],[7.9,1,"nl"],[8.97,1,"nl"],[7.86,1,"nl"],[4.79,1,"nl"],[9.47,1,"nl"],[6.4,1,"nl"],[8.39,1,"nl"],[-7.21,0,"neg"],[-3.32,0,"neg"],[-4.95,0,"neg"],[-6.09,0,"neg"],[-3.35,0,"neg"],[-4.65,0,"neg"],[-3.23,0,"neg"]];
+
+function bars() {
+  const svg = document.getElementById("bars"), W = 460, H = 250, L = 38, B = 200, T = 18, bw = 34;
+  let s = "";
+  [0, .25, .5, .75, 1].forEach(v => { const y = B - (B - T) * v;
+    s += `<line x1="${L}" x2="${W - 8}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L - 6}" y="${y + 4}" text-anchor="end" font-size="10">${Math.round(v * 100)}%</text>`; });
+  const gw = (W - L - 8) / SUMMARY.length;
+  SUMMARY.forEach((d, i) => {
+    const x0 = L + gw * i + gw / 2 - bw - 3;
+    [["top1", "var(--rrf)"], ["top5", "var(--rr)"]].forEach(([k, c], j) => {
+      const h = (B - T) * d[k], x = x0 + j * (bw + 6);
+      s += `<rect x="${x}" y="${B - h}" width="${bw}" height="${h}" rx="4" fill="${c}" opacity="${i === 2 ? 1 : .55}"/>
+            <text x="${x + bw / 2}" y="${B - h - 5}" text-anchor="middle" font-size="11" font-weight="600" style="fill:var(--ink)">${d[k].toFixed(2)}</text>`;
+    });
+    s += `<text x="${L + gw * i + gw / 2}" y="${B + 18}" text-anchor="middle" font-size="11.5" style="fill:var(--ink)">${d.name}</text>`;
+  });
+  s += `<rect x="${L}" y="${H - 18}" width="10" height="10" rx="2" fill="var(--rrf)"/><text x="${L + 14}" y="${H - 9}" font-size="11">correct at rank 1</text>
+        <rect x="${L + 130}" y="${H - 18}" width="10" height="10" rx="2" fill="var(--rr)"/><text x="${L + 144}" y="${H - 9}" font-size="11">correct in top 5</text>`;
+  svg.innerHTML = s;
+}
+
+function conf() {
+  const svg = document.getElementById("conf"), W = 460, L = 34, R = 450, T = 16, B = 196;
+  const xmin = -8, xmax = 12, X = v => L + (R - L) * (v - xmin) / (xmax - xmin), Y = p => B - (B - T) * p;
+  let s = "";
+  [0, .5, 1].forEach(p => s += `<line x1="${L}" x2="${R}" y1="${Y(p)}" y2="${Y(p)}" stroke="var(--line)" ${p === .5 ? 'stroke-dasharray="4 4"' : ""}/><text x="${L - 6}" y="${Y(p) + 4}" text-anchor="end" font-size="10">${p}</text>`);
+  s += `<text x="${R}" y="${Y(.5) - 6}" text-anchor="end" font-size="10">warning below 0.5</text>`;
+  for (let v = xmin; v <= xmax; v += 4) s += `<text x="${X(v)}" y="${B + 16}" text-anchor="middle" font-size="10">${v}</text>`;
+  s += `<text x="${(L + R) / 2}" y="${B + 32}" text-anchor="middle" font-size="11">best reranker score</text>`;
+  let d = ""; for (let v = xmin; v <= xmax; v += .25) d += (d ? "L" : "M") + X(v).toFixed(1) + " " + Y(platt(v)).toFixed(1);
+  s += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  POINTS.forEach(([v, ok, kind], i) => {
+    const jitter = ((i * 37) % 11 - 5) * 1.6;
+    const y = ok ? Y(1) + 10 + jitter : Y(0) - 10 + jitter;
+    const col = kind === "neg" ? "var(--warn)" : ok ? "var(--ok)" : "var(--warn)";
+    s += kind === "neg"
+      ? `<rect x="${X(v) - 4}" y="${y - 4}" width="8" height="8" fill="${col}" opacity=".9"><title>no answer in KB · score ${v}</title></rect>`
+      : `<circle cx="${X(v)}" cy="${y}" r="4" fill="${col}" opacity="${ok ? .75 : .95}"><title>${ok ? "answer found" : "answer missed"} · score ${v}</title></circle>`;
+  });
+  s += `<circle cx="${L + 8}" cy="${B + 46}" r="4" fill="var(--ok)"/><text x="${L + 16}" y="${B + 50}" font-size="10.5">answer found</text>
+        <rect x="${L + 104}" y="${B + 42}" width="8" height="8" fill="var(--warn)"/><text x="${L + 116}" y="${B + 50}" font-size="10.5">no answer in KB</text>
+        <circle cx="${L + 222}" cy="${B + 46}" r="4" fill="var(--warn)"/><text x="${L + 230}" y="${B + 50}" font-size="10.5">answer exists, missed</text>`;
+  svg.setAttribute("viewBox", `0 0 ${W} 256`);
+  svg.innerHTML = s;
+}
+
+// theme toggle (per-viewer convenience only)
+(function () {
+  const root = document.documentElement, btn = document.getElementById("theme");
+  try { const t = localStorage.getItem("hsw-theme"); if (t) root.dataset.theme = t; } catch (e) {}
+  btn.onclick = () => {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("hsw-theme", root.dataset.theme); } catch (e) {}
+  };
+})();
+
+build(); bars(); conf();
+</script>
+</body>
+</html>

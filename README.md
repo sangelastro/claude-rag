@@ -10,7 +10,7 @@ MCP server that indexes a folder of `.md` files into a local SQLite vector store
 
 ![Architecture Diagram](docs/diagram.png)
 
-> 📊 **[Interactive diagram →](docs/diagram.html)**
+> 📊 **[Interactive diagram →](docs/diagram.html)** · 🔎 **[How `kb_search` finds an answer, step by step →](docs/how_search_works.html)**
 
 Three components working together:
 
@@ -133,6 +133,7 @@ rag/
 ├── eval/
 │   ├── eval_retrieval.py       # Retrieval benchmark against a gold set
 │   └── gold_set.example.json   # Gold set format (the real one stays local)
+├── docs/how_search_works.html  # Interactive walkthrough of the search pipeline
 ├── architecture.html   # Technical documentation
 └── kb_rag_slides.html  # Architecture slide deck
 ```
