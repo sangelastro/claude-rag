@@ -20,7 +20,7 @@ Three components working together:
 | **② MCP** | Claude calls `kb_search()` → BM25 + cosine sim fused with RRF → top-K chunks | explicit hybrid search |
 | **③ Hook** | every prompt intercepted → keyword score on `kb_chunks.json` → auto-inject | automatic, ~10ms, no model |
 
-**Stack**: Python · sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, ~120MB, CPU-only) · SQLite · MCP stdio
+**Stack**: Python · fastembed / ONNX Runtime (embedding `paraphrase-multilingual-MiniLM-L12-v2` ~120MB + reranker `mmarco-mMiniLMv2-L12` int8 ~120MB, CPU-only) · SQLite · MCP stdio
 
 ## Tools exposed
 
@@ -122,6 +122,7 @@ Hook behaviour is tunable via env vars:
 ```
 rag/
 ├── server.py           # MCP server
+├── reranker.py         # Local cross-encoder reranker + calibrated confidence
 ├── requirements.txt
 ├── .gitignore
 ├── README.md
@@ -144,9 +145,10 @@ rag/
 2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages)
 3. **Storage** — vectors stored as `float32` BLOBs in SQLite + `kb_chunks.json` for hooks
 4. **Search** — hybrid: BM25 over an in-memory inverted index + cosine similarity in numpy, the two rankings (top 50 each) fused with Reciprocal Rank Fusion; top-K returned. BM25 catches exact identifiers (table names, ports, hostnames) that a 128-token embedding model blurs; embeddings catch paraphrased natural-language questions
-5. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
-6. **Invalidation** — mtime-based: only modified files are re-indexed on startup
-7. **Savings tracking** — every search records chars served vs full-file baseline in `search_stats` table; `kb_savings()` aggregates the cumulative token reduction without re-reading any file
+5. **Rerank + confidence** — the top 10 hybrid candidates are rescored by a local multilingual cross-encoder (ONNX, int8, see `reranker.py`): one forward pass per (query, chunk) pair, no text generated. The top score is mapped to a calibrated probability (Platt scaling) that the answer is among the results; below `KB_MIN_CONFIDENCE` the tool says so instead of silently returning noise
+6. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
+7. **Invalidation** — mtime-based: only modified files are re-indexed on startup
+8. **Savings tracking** — every search records chars served vs full-file baseline in `search_stats` table; `kb_savings()` aggregates the cumulative token reduction without re-reading any file
 
 ## Environment variables
 
@@ -158,6 +160,11 @@ rag/
 | `CHUNK_MAX_CHARS` | `400` | Max chars per chunk; longer sections are split into overlapping sub-chunks |
 | `CHUNK_OVERLAP` | `80` | Overlap chars between adjacent sub-chunks to preserve context continuity |
 | `KB_SEARCH_MODE` | `hybrid` | `hybrid` (BM25 + semantic, RRF) or `semantic` (cosine only, behaviour up to 1.1.0) |
+| `KB_RERANK` | `mmarco-mminilm` | Local cross-encoder that reorders the hybrid candidates: `mmarco-mminilm` (AVX-512 int8), `mmarco-mminilm-avx2` (older CPUs), `bge-m3` (slower, not calibrated) or `off`. If it cannot load, search falls back to hybrid |
+| `KB_RERANK_CANDIDATES` | `10` | Hybrid candidates passed to the reranker |
+| `KB_RERANK_THREADS` | `4` | ONNX Runtime threads for the reranker |
+| `KB_RERANK_CACHE` | `~/.cache/claude-rag/models` | Where reranker models are downloaded |
+| `KB_MIN_CONFIDENCE` | `0.5` | Below this calibrated confidence, `kb_search` warns that the answer is probably not in the KB |
 
 ## Evaluating retrieval
 
@@ -168,15 +175,16 @@ cp eval/gold_set.example.json eval/gold_set.json   # then write queries about yo
 py eval/eval_retrieval.py --no-rerank
 ```
 
-Include unanswerable queries (`"kind": "neg"`): the script also reports whether a score threshold can tell "not in the KB" apart from a real hit.
+Include unanswerable queries (`"kind": "neg"`): the script also reports whether a score threshold can tell "not in the KB" apart from a real hit. `--calibrate` fits the Platt parameters of each reranker with 5-fold cross-validation; copy `platt_all` into `reranker.py`.
 
-Measured on the author's KB (5,241 chunks, 50 answerable + 7 unanswerable queries):
+Measured on the author's KB (5,241 chunks, 50 answerable + 7 unanswerable queries). Reranking 10 candidates with `mmarco-mminilm` takes ~0.4 s on CPU (4 threads; `bge-m3` ~6 s for 20). Its calibrated confidence tells "not in the KB" apart with 0.95 accuracy in cross-validation (calibration error 0.07):
 
 | Retriever | Correct section in top 1 | in top 5 | in top 10 |
 |---|---|---|---|
 | semantic (≤ 1.1.0) | 0.58 | 0.74 | 0.82 |
 | **hybrid (1.2.0)** | 0.64 | 0.90 | **1.00** |
-| hybrid + cross-encoder rerank (not shipped, ~3 s/query on CPU) | 0.76 | 0.96 | 0.98 |
+| **hybrid + rerank `mmarco-mminilm` (1.3.0, default)** | **0.80** | **0.94** | **1.00** |
+| hybrid + rerank `bge-m3` (20 candidates) | 0.74 | 0.96 | 1.00 |
 
 ## Credits
 

@@ -44,12 +44,21 @@ FUSION_DEPTH = 50   # candidati presi da ciascun ranking prima della fusione
 RRF_K        = 60   # costante standard di Reciprocal Rank Fusion
 BM25_K1, BM25_B = 1.2, 0.75
 
+# Secondo stadio: cross-encoder locale che riordina i candidati ibridi (vedi reranker.py).
+# KB_RERANK=off lo disattiva; se il modello non si carica si resta sull'ibrida, senza errori.
+RERANK_MODEL      = os.environ.get("KB_RERANK", "mmarco-mminilm")
+RERANK_CANDIDATES = int(os.environ.get("KB_RERANK_CANDIDATES", "10"))   # l'ibrida ha gia' la risposta nei primi 10
+RERANK_THREADS    = int(os.environ.get("KB_RERANK_THREADS", "4"))
+# sotto questa confidenza kb_search avvisa che la risposta probabilmente non e' nella KB
+MIN_CONFIDENCE    = float(os.environ.get("KB_MIN_CONFIDENCE", "0.5"))
+
 _model: TextEmbedding = None
 
 # cache in-memory degli embedding: caricati una volta all'avvio/reindex
 _emb_matrix: np.ndarray = None   # shape (N, 384)
 _emb_meta: list = None           # lista di {file, section, content}
 _bm25: "BM25Index" = None        # indice lessicale sugli stessi chunk
+_reranker = None                 # None = non ancora caricato, False = non disponibile
 
 
 def get_model() -> TextEmbedding:
@@ -57,6 +66,21 @@ def get_model() -> TextEmbedding:
     if _model is None:
         _model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     return _model
+
+
+def get_reranker():
+    global _reranker
+    if _reranker is None:
+        if RERANK_MODEL == "off":
+            _reranker = False
+        else:
+            try:
+                from reranker import Reranker
+                _reranker = Reranker(RERANK_MODEL, threads=RERANK_THREADS)
+            except Exception as e:
+                print(f"KB RAG: reranker non disponibile ({e}), resto sulla ricerca ibrida", file=sys.stderr)
+                _reranker = False
+    return _reranker
 
 
 class BM25Index:
@@ -102,6 +126,7 @@ def _load_emb_cache(conn: sqlite3.Connection) -> None:
     _emb_meta = [{"file": r[0], "section": r[1], "content": r[2]} for r in rows]
     _emb_matrix = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in rows])
     _bm25 = BM25Index([m["content"] for m in _emb_meta])
+    get_reranker()   # precarica qui (avvio / reindex) invece che alla prima ricerca: ~2 s
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -296,8 +321,10 @@ def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int
 
 # ── SEARCH ────────────────────────────────────────────────────────────────────
 
-def rank(query: str, top_k: int = 5, mode: str = None) -> list[dict]:
-    """Ranking puro, senza side effect (usato da search() e da eval/)."""
+def rank(query: str, top_k: int = 5, mode: str = None, rerank: bool = True) -> list[dict]:
+    """Ranking puro, senza side effect (usato da search() e da eval/).
+    Con il reranker attivo ogni risultato porta anche `rerank` (punteggio del cross-encoder)
+    e `confidence`: probabilita' calibrata che la risposta sia fra questi risultati."""
     global _emb_matrix, _emb_meta
 
     # carica cache se non ancora inizializzata
@@ -327,10 +354,24 @@ def rank(query: str, top_k: int = 5, mode: str = None) -> list[dict]:
     for ranking in (np.argsort(sem)[::-1][:FUSION_DEPTH], np.argsort(lex)[::-1][:FUSION_DEPTH]):
         for pos, i in enumerate(ranking):
             fused[int(i)] += 1 / (RRF_K + pos + 1)
-    return [
+    reranker = get_reranker() if rerank else False
+    candidates = fused.most_common(max(top_k, RERANK_CANDIDATES) if reranker else top_k)
+    results = [
         {**_emb_meta[i], "score": score, "sem": float(sem[i]), "bm25": float(lex[i])}
-        for i, score in fused.most_common(top_k)
+        for i, score in candidates
     ]
+    if not reranker:
+        return results
+
+    scores = reranker.scores(query, [r["content"] for r in results])
+    for r, s in zip(results, scores):
+        r["rerank"] = float(s)
+    results.sort(key=lambda r: -r["rerank"])
+    confidence = reranker.probability(results[0]["rerank"])
+    if confidence is not None:
+        for r in results:
+            r["confidence"] = confidence
+    return results[:top_k]
 
 
 def search(query: str, top_k: int = 5, source: str = "mcp") -> list[dict]:
@@ -350,8 +391,17 @@ def format_results(results: list[dict]) -> str:
     if not results:
         return "Nessun risultato trovato nella KB."
     parts = []
+    if "confidence" in results[0]:
+        c = results[0]["confidence"]
+        if c < MIN_CONFIDENCE:
+            parts.append(f"⚠️ Confidenza bassa ({c:.2f}): probabilmente la risposta NON è nella KB. "
+                         "Non basarti su questi chunk senza verificarli.")
+        else:
+            parts.append(f"Confidenza: {c:.2f}")
     for i, r in enumerate(results, 1):
-        if "bm25" in r:
+        if "rerank" in r:
+            score = f"rerank: {r['rerank']:.2f}, rrf: {r['score']:.4f}, bm25: {r['bm25']:.1f}"
+        elif "bm25" in r:
             score = f"rrf: {r['score']:.4f}, sem: {r['sem']:.3f}, bm25: {r['bm25']:.1f}"
         else:
             score = f"score: {r['score']:.3f}"

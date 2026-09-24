@@ -7,13 +7,14 @@ Valuta, sugli stessi chunk indicizzati in kb.db:
   - bm25     : BM25 classico sui chunk (alternativa locale, nessuna dipendenza)
   - hybrid   : fusione RRF semantic + bm25
   - server   : server.rank() — il codice vero di kb_search (deve coincidere con hybrid)
-  - rerank   : top 20 di server.rank() riordinati da un cross-encoder locale multilingua
-               (proxy di un reranker tipo Jev: stesso compito, dati che non escono)
+  - rerank:* : top 20 della ricerca ibrida riordinati da un cross-encoder locale (reranker.py),
+               un modello per colonna: stesso ruolo di un reranker tipo Jev, dati che non escono
 
 Non scrive in search_stats: la ricerca e' replicata qui, non chiama server.search().
 
-Uso:  py eval/eval_retrieval.py [--no-rerank]     (dalla root del repo)
-      KB_RAG_DB=<path> per usare un kb.db diverso da quello di produzione
+Uso:  py eval/eval_retrieval.py [--no-rerank] [--rerank=mmarco-mminilm,bge-m3] [--calibrate]
+      (dalla root del repo; KB_RAG_DB=<path> per usare un kb.db diverso)
+      --calibrate  stima i parametri Platt di ogni reranker con cross-validation 5-fold per query
 """
 import json
 import os
@@ -144,23 +145,77 @@ class Server:
 
     def rank(self, q, depth=DEPTH):
         return [(self.key[(r["file"], r["section"], r["content"])], r["score"])
-                for r in self.server.rank(q, depth, mode="hybrid")]
+                for r in self.server.rank(q, depth, mode="hybrid", rerank=False)]
+
+
+class ServerRerank(Server):
+    """server.rank() con il reranker attivo: verifica l'integrazione vera, con i default del server."""
+    name = "server+rr"
+
+    def rank(self, q, depth=DEPTH):
+        return [(self.key[(r["file"], r["section"], r["content"])], r["rerank"])
+                for r in self.server.rank(q, Rerank.CANDIDATES)]   # come in produzione: 10 candidati
 
 
 class Rerank:
-    name = "rerank"
-    MODEL = "jinaai/jina-reranker-v2-base-multilingual"
-    CANDIDATES = 20
+    CANDIDATES = int(os.environ.get("KB_RERANK_CANDIDATES", "10"))   # stesso default di server.py
 
-    def __init__(self, first_stage, meta):
-        from fastembed.rerank.cross_encoder import TextCrossEncoder
-        self.model = TextCrossEncoder(model_name=self.MODEL)
+    def __init__(self, first_stage, meta, model_name):
+        import time
+        from reranker import Reranker
+        self.clock = time.perf_counter
+        self.name = f"rr:{model_name}"
+        self.model = Reranker(model_name)
         self.first, self.meta = first_stage, meta
+        self.latency_ms = []
 
     def rank(self, q):
         cand = [i for i, _ in self.first.rank(q)[:self.CANDIDATES]]
-        scores = list(self.model.rerank(q, [self.meta[i]["content"] for i in cand]))
+        t = self.clock()
+        scores = self.model.scores(q, [self.meta[i]["content"] for i in cand])
+        self.latency_ms.append(1000 * (self.clock() - t))
         return sorted(zip(cand, map(float, scores)), key=lambda x: -x[1])
+
+
+# ── calibrazione (Platt scaling) ─────────────────────────────────────────────
+
+def fit_platt(scores, labels, C=1.0):
+    """Platt scaling: p = sigmoid(a*s + b), regressione logistica con L2 (sklearn).
+    La regolarizzazione tiene `a` finito quando le classi sono (quasi) separabili."""
+    from sklearn.linear_model import LogisticRegression
+    lr = LogisticRegression(C=C).fit(np.asarray(scores, float).reshape(-1, 1), np.asarray(labels, int))
+    return float(lr.coef_[0, 0]), float(lr.intercept_[0])
+
+
+def calibrate(retriever, items, meta, folds=5):
+    """Per ogni query: (score top-1, 'la risposta c'e' ed e' in top 5'). La probabilita' calibrata
+    risponde alla domanda che serve a kb_search: posso fidarmi di questi risultati?"""
+    rows = []
+    # fold stratificati per tipo di query: ogni fold ha la sua parte di query senza risposta
+    order = sorted(range(len(items)), key=lambda n: (items[n]["kind"], n))
+    fold_of = {n: k % folds for k, n in enumerate(order)}
+    for n, it in enumerate(items):
+        ranked = retriever.rank(it["q"])
+        ok = it["kind"] != "neg" and any(is_hit(meta[i], it["gold"]) for i, _ in ranked[:5])
+        rows.append((fold_of[n], ranked[0][1], int(ok)))
+    probs, labels = [], []
+    for f in range(folds):
+        train = [(s, y) for k, s, y in rows if k != f]
+        a, b = fit_platt(*zip(*train))
+        for k, s, y in rows:
+            if k == f:
+                probs.append(1 / (1 + math.exp(-max(-30.0, min(30.0, a * s + b)))))
+                labels.append(y)
+    probs, labels = np.array(probs), np.array(labels)
+    bins = np.clip((probs * 5).astype(int), 0, 4)
+    ece = sum(abs(probs[bins == k].mean() - labels[bins == k].mean()) * (bins == k).mean()
+              for k in range(5) if (bins == k).any())
+    return {
+        "platt_all": fit_platt([s for _, s, _ in rows], [y for _, _, y in rows]),
+        "cv_accuracy@0.5": float(((probs >= 0.5) == labels).mean()),
+        "cv_ece": float(ece),
+        "cv_brier": float(((probs - labels) ** 2).mean()),
+    }
 
 
 # ── metriche ─────────────────────────────────────────────────────────────────
@@ -227,8 +282,11 @@ def main():
 
     sem, bm, srv = Semantic(meta, emb), BM25(meta), Server(meta)
     retrievers = [sem, Lexical(meta), bm, Hybrid(sem, bm), srv]
+    rerankers = []
     if "--no-rerank" not in sys.argv:
-        retrievers.append(Rerank(srv, meta))
+        arg = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--rerank=")), "mmarco-mminilm")
+        rerankers = [Rerank(srv, meta, name) for name in arg.split(",")]
+        retrievers += rerankers + [ServerRerank(meta)]
 
     report = {"n_chunks": len(meta), "n_items": len(items), "results": {}}
     for r in retrievers:
@@ -252,6 +310,13 @@ def main():
               f"bad(med/max)={a['bad_median']:.3f}/{a['bad_max']:.3f}  "
               f"soglia={a['best_threshold']:.3f} acc={a['best_accuracy']:.2f}  "
               f"neg={[round(x, 3) for x in a['neg_scores']]}")
+    for r in rerankers:
+        lat = np.array(r.latency_ms)
+        print(f"{r.name:<18} latenza rerank di {Rerank.CANDIDATES} chunk: mediana {np.median(lat):.0f} ms, p95 {np.percentile(lat, 95):.0f} ms")
+    if "--calibrate" in sys.argv:
+        print()
+        for r in rerankers:
+            print(f"{r.name:<18} calibrazione:", json.dumps(calibrate(r, items, meta)))
 
 
 if __name__ == "__main__":

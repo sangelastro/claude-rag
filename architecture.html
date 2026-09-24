@@ -543,10 +543,10 @@
         recuperare solo i chunk rilevanti invece di caricare interi file .md.
       </p>
       <div class="page-meta">
-        <span class="meta-item"><strong>Versione</strong> 1.2</span>
+        <span class="meta-item"><strong>Versione</strong> 1.3</span>
         <span class="meta-item"><strong>Data</strong> 2026-09-24</span>
         <span class="meta-item"><strong>Modello embeddings</strong> paraphrase-multilingual-MiniLM-L12-v2</span>
-        <span class="meta-item"><strong>Ricerca</strong> ibrida BM25 + coseno (RRF)</span>
+        <span class="meta-item"><strong>Ricerca</strong> ibrida BM25 + coseno (RRF) + reranker locale</span>
         <span class="meta-item"><strong>Transport</strong> MCP stdio</span>
         <span class="meta-item"><strong>Vector store</strong> SQLite (float32 blob)</span>
       </div>
@@ -682,7 +682,9 @@ POST /auth/token — returns JWT bearer token
         <li><span class="step-num">04</span><div class="step-body"><strong>Similarità coseno</strong><br>Per ogni chunk: <code>score = dot(q, c) / (|q| × |c|)</code>, una sola moltiplicazione di matrici.</div></li>
         <li><span class="step-num">05</span><div class="step-body"><strong>BM25</strong><br>In parallelo, lo stesso testo della query viene cercato nell'indice invertito BM25 (<code>k1=1.2, b=0.75</code>): premia i termini esatti e rari, come nomi di tabella, porte e hostname.</div></li>
         <li><span class="step-num">06</span><div class="step-body"><strong>Fusione RRF</strong><br>I primi 50 di ciascun ranking vengono fusi con Reciprocal Rank Fusion: <code>score = Σ 1 / (60 + posizione)</code>. Conta la posizione, non il punteggio, perché le due scale non sono confrontabili. I top-K (default 5) vengono selezionati.</div></li>
-        <li><span class="step-num">07</span><div class="step-body"><strong>Risposta formattata</strong><br>Il risultato torna a Claude Code come stringa con header <code>[file &gt; sezione]</code>, i tre punteggi (<code>rrf</code>, <code>sem</code>, <code>bm25</code>) e il contenuto. Con <code>KB_SEARCH_MODE=semantic</code> si torna al solo coseno.</div></li>
+        <li><span class="step-num">07</span><div class="step-body"><strong>Reranking</strong><br>I primi 10 candidati fusi passano a un cross-encoder locale (<code>mmarco-mMiniLMv2-L12</code>, ONNX int8): una sola passata per ogni coppia (query, chunk), nessun testo generato, circa 0,4 s su CPU. I chunk vengono riordinati per questo punteggio.</div></li>
+        <li><span class="step-num">08</span><div class="step-body"><strong>Confidenza</strong><br>Il punteggio del primo chunk diventa una probabilità calibrata (Platt scaling) che la risposta sia fra i risultati. Sotto <code>KB_MIN_CONFIDENCE</code> (0,5) la risposta si apre con un avviso: probabilmente l'informazione non è nella KB.</div></li>
+        <li><span class="step-num">09</span><div class="step-body"><strong>Risposta formattata</strong><br>Il risultato torna a Claude Code come stringa con la confidenza, l'header <code>[file &gt; sezione]</code>, i punteggi (<code>rerank</code>, <code>rrf</code>, <code>bm25</code>) e il contenuto. <code>KB_RERANK=off</code> torna alla sola ibrida, <code>KB_SEARCH_MODE=semantic</code> al solo coseno.</div></li>
       </ul>
     </section>
 
@@ -703,7 +705,7 @@ POST /auth/token — returns JWT bearer token
           <tbody>
             <tr><td>Solo semantica (≤ 1.1.0)</td><td class="cell-mono">0.58</td><td class="cell-warn cell-mono">0.74</td><td class="cell-mono">0.82</td></tr>
             <tr><td><strong>Ibrida BM25 + semantica (1.2.0)</strong></td><td class="cell-mono">0.64</td><td class="cell-good cell-mono">0.90</td><td class="cell-good cell-mono">1.00</td></tr>
-            <tr><td>Ibrida + reranker cross-encoder (non incluso)</td><td class="cell-mono">0.76</td><td class="cell-mono">0.96</td><td class="cell-mono">0.98</td></tr>
+            <tr><td><strong>Ibrida + reranker mmarco-mMiniLM (1.3.0)</strong></td><td class="cell-good cell-mono">0.80</td><td class="cell-good cell-mono">0.94</td><td class="cell-good cell-mono">1.00</td></tr>
           </tbody>
         </table>
       </div>
@@ -714,9 +716,10 @@ POST /auth/token — returns JWT bearer token
       </p>
       <div class="callout callout-info">
         <span class="callout-icon">i</span>
-        <p>Misurato su una KB di 5.241 chunk con 50 query con risposta e 7 senza. Il reranker migliora il primo
-        risultato e separa bene le query senza risposta, ma costa circa 3 s per query su CPU: per questo non è
-        nel server.</p>
+        <p>Misurato su una KB di 5.241 chunk con 50 query con risposta e 7 senza. Il reranker porta la sezione
+        giusta al primo posto nell'80% dei casi e, con la confidenza calibrata, distingue le query senza risposta
+        con accuratezza 0,95 in cross-validation. Costa circa 0,4 s per ricerca su CPU. <code>bge-reranker-v2-m3</code>
+        è stato provato: 5 volte più lento e meno preciso al primo posto su questa KB.</p>
       </div>
     </section>
 
@@ -784,6 +787,7 @@ POST /auth/token — returns JWT bearer token
 <span class="dir">~/.claude/my-kb/</span>
 ├── <span class="dir">rag/</span>               <span class="comment"># ← questo repo</span>
 │   ├── server.py          <span class="comment"># MCP server — MCPServer + tool, ricerca ibrida</span>
+│   ├── reranker.py        <span class="comment"># cross-encoder locale + confidenza calibrata</span>
 │   ├── <span class="dir">eval/</span>              <span class="comment"># benchmark del retrieval (gold set reale gitignored)</span>
 │   ├── requirements.txt   <span class="comment"># sentence-transformers, mcp, numpy</span>
 │   ├── kb.db              <span class="comment"># SQLite: tabella chunks con BLOB embedding (gitignored)</span>
@@ -798,7 +802,7 @@ POST /auth/token — returns JWT bearer token
       </div>
       <hr class="divider">
       <p style="font-size:12px; color: var(--text3); font-family: var(--mono);">
-        claude-rag MCP Server · v1.2 · 2026-09-24 · github.com/sangelastro/claude-rag
+        claude-rag MCP Server · v1.3 · 2026-09-24 · github.com/sangelastro/claude-rag
       </p>
     </section>
 

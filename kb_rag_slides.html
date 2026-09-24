@@ -660,8 +660,8 @@ POST /webhooks/register
     <div class="sf-step">
       <div class="sf-num">04</div>
       <div class="sf-body">
-        <h3>Top-K ranking &amp; risposta</h3>
-        <p>I chunk ordinati per score decrescente. I top-K (default 5, max 10) tornano come stringa con <code>[file › sezione] (rrf: 0.0328, sem: 0.662, bm25: 30.4)</code> + contenuto. Claude riceve solo questi.</p>
+        <h3>Reranking, confidenza &amp; risposta</h3>
+        <p>I primi 10 candidati vengono riordinati da un cross-encoder locale (~0,4 s su CPU). Il punteggio migliore diventa una confidenza calibrata: sotto 0,5 Claude viene avvisato che la risposta probabilmente non è nella KB. I top-K (default 5, max 10) tornano come <code>[file › sezione] (rerank: 9.47, rrf: 0.0164, bm25: 26.1)</code> + contenuto.</p>
       </div>
     </div>
   </div>
@@ -706,7 +706,7 @@ POST /webhooks/register
     <div class="tool-card">
       <h3>kb_search</h3>
       <span class="sig">( query: str, top_k: int = 5 ) → str</span>
-      <p>Ricerca ibrida BM25 + semantica. Restituisce i chunk più rilevanti con file sorgente, sezione e i punteggi <code>rrf</code>, <code>sem</code>, <code>bm25</code>.</p>
+      <p>Ricerca ibrida BM25 + semantica, riordinata da un reranker locale. Restituisce i chunk più rilevanti con file sorgente, sezione, punteggi e la confidenza che la risposta sia davvero nella KB.</p>
     </div>
     <div class="tool-card">
       <h3>kb_reindex</h3>

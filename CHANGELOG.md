@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.0] — 2026-09-24
+
+### Added
+- **Local reranker** (`reranker.py`): the top 10 hybrid candidates are rescored by a multilingual cross-encoder (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, Apache-2.0, ONNX int8, ~0.4 s on CPU). Correct section at rank 1 **0.64 → 0.80**, in top 5 0.90 → 0.94
+- **Calibrated confidence**: Platt scaling maps the top rerank score to the probability that the answer is among the results (5-fold CV: accuracy 0.95, ECE 0.07). Below `KB_MIN_CONFIDENCE` (0.5) `kb_search` warns that the answer is probably not in the KB
+- `KB_RERANK`, `KB_RERANK_CANDIDATES`, `KB_RERANK_THREADS`, `KB_RERANK_CACHE`, `KB_MIN_CONFIDENCE`
+- `eval_retrieval.py`: `--rerank=<models>`, `--calibrate`, rerank latency, `server+rr` check of the real integration
+
+### Changed
+- `requirements.txt` lists what the server actually imports (`fastembed`, not `sentence-transformers`); `scikit-learn` only for `--calibrate`
+- Search falls back to hybrid if the reranker model cannot be loaded
+
+---
+
 ## [1.2.0] — 2026-09-24
 
 ### Changed
