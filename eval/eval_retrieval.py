@@ -2,7 +2,7 @@
 Baseline di retrieval della KB contro il gold set.
 
 Valuta, sugli stessi chunk indicizzati in kb.db:
-  - semantic : quello che fa oggi kb_search (MiniLM + coseno)
+  - semantic : solo coseno, col modello di KB_EMBED_MODEL (default MiniLM)
   - lexical  : quello che fa oggi l'hook kb_recall (overlap token / sqrt(len))
   - bm25     : BM25 classico sui chunk (alternativa locale, nessuna dipendenza)
   - hybrid   : fusione RRF semantic + bm25
@@ -13,7 +13,7 @@ Valuta, sugli stessi chunk indicizzati in kb.db:
 Non scrive in search_stats: la ricerca e' replicata qui, non chiama server.search().
 
 Uso:  py eval/eval_retrieval.py [--no-rerank] [--rerank=mmarco-mminilm,bge-m3] [--calibrate]
-      (dalla root del repo; KB_RAG_DB=<path> per usare un kb.db diverso)
+      (dalla root del repo; KB_RAG_DB=<path> per usare un kb.db diverso, KB_EMBED_MODEL come in server.py)
       --calibrate  stima i parametri Platt di ogni reranker con cross-validation 5-fold per query
 """
 import json
@@ -33,7 +33,7 @@ RAG = HERE.parent
 KB_DB = Path(os.environ.setdefault("KB_RAG_DB", str(RAG / "kb.db")))
 os.environ.setdefault("KB_RAG_DIR", str(RAG.parent))
 # gold set e risultati contengono contenuti della KB: restano locali (gitignored)
-GOLD = HERE / "gold_set.json"
+GOLD = Path(os.environ.get("KB_EVAL_GOLD", str(HERE / "gold_set.json")))
 sys.path.insert(0, str(RAG / "hooks"))
 sys.path.insert(0, str(RAG))
 from kb_recall import tokenize, score_chunk  # noqa: E402
@@ -70,12 +70,12 @@ class Semantic:
     name = "semantic"
 
     def __init__(self, meta, emb):
-        from fastembed import TextEmbedding
-        self.model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        import server   # stesso modello del server (KB_EMBED_MODEL), con i suoi prefissi per le domande
+        self.model = server.get_model()
         self.emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-9)
 
     def rank(self, q):
-        v = np.array(list(self.model.embed([q])))[0].astype(np.float32)
+        v = self.model.embed_query(q)
         s = self.emb @ (v / (np.linalg.norm(v) + 1e-9))
         idx = np.argsort(s)[::-1][:DEPTH]
         return [(int(i), float(s[i])) for i in idx]

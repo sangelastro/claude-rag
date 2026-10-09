@@ -25,12 +25,15 @@ from pathlib import Path
 from datetime import datetime
 
 import numpy as np
-from fastembed import TextEmbedding
 from mcp.server.mcpserver.server import MCPServer
 
 KB_DIR     = Path(os.environ.get("KB_RAG_DIR", str(Path(__file__).parent.parent)))
 DB_PATH    = Path(os.environ.get("KB_RAG_DB",  str(Path(__file__).parent / "kb.db")))
-MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+# Modello di embedding: "minilm" (default, fastembed/ONNX, 384d, 128 token) oppure "embeddinggemma-2"
+# (sentence-transformers + torch, 768d troncabili a 512/256/128, 8K token). Cambiarlo forza un reindex completo.
+EMBED_MODEL   = os.environ.get("KB_EMBED_MODEL", "minilm")
+EMBED_DIM     = int(os.environ.get("KB_EMBED_DIM", "0")) or None   # solo Gemma: troncamento Matryoshka
+EMBED_THREADS = int(os.environ.get("KB_EMBED_THREADS", "4"))
 
 # max token del modello = 128 → ~400 chars per chunk (stima conservativa per italiano)
 # overlap = 80 chars per preservare contesto tra chunk adiacenti
@@ -52,19 +55,78 @@ RERANK_THREADS    = int(os.environ.get("KB_RERANK_THREADS", "4"))
 # sotto questa confidenza kb_search avvisa che la risposta probabilmente non e' nella KB
 MIN_CONFIDENCE    = float(os.environ.get("KB_MIN_CONFIDENCE", "0.5"))
 
-_model: TextEmbedding = None
+_model = None
 
 # cache in-memory degli embedding: caricati una volta all'avvio/reindex
-_emb_matrix: np.ndarray = None   # shape (N, 384)
+_emb_matrix: np.ndarray = None   # shape (N, dim del modello)
 _emb_meta: list = None           # lista di {file, section, content}
 _bm25: "BM25Index" = None        # indice lessicale sugli stessi chunk
 _reranker = None                 # None = non ancora caricato, False = non disponibile
 
 
-def get_model() -> TextEmbedding:
+class MiniLMEmbedder:
+    """paraphrase-multilingual-MiniLM-L12-v2 via fastembed: nessun prefisso, stesso vettore per domanda e chunk."""
+    id = "minilm"
+
+    def __init__(self):
+        from fastembed import TextEmbedding
+        self.model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        return np.array(list(self.model.embed(texts)), dtype=np.float32)
+
+    def embed_query(self, query: str) -> np.ndarray:
+        return self.embed_documents([query])[0]
+
+
+class GemmaEmbedder:
+    """google/embeddinggemma-2 via sentence-transformers, solo la parte testo (271M dei 744M parametri).
+    fp32 su CPU: bf16 e' 2,5 volte piu' lento senza supporto hardware, fp16 restituisce vettori degradati.
+    Il modello vuole prefissi asimmetrici: la domanda come ricerca, il chunk come documento col suo titolo."""
+
+    def __init__(self, dim: int = None):
+        import gc
+        import torch
+        from sentence_transformers import SentenceTransformer
+        torch.set_num_threads(EMBED_THREADS)
+        self.id = f"embeddinggemma-2:{dim or 768}"
+        self.model = SentenceTransformer("google/embeddinggemma-2", device="cpu",
+                                         truncate_dim=dim, model_kwargs={"dtype": torch.float32})
+        inner = self.model[0].model
+        for tower in ("vision_tower", "audio_tower", "embed_vision", "embed_audio"):
+            if hasattr(inner, tower):
+                setattr(inner, tower, None)   # servono solo per immagini e audio: ~1 GB di RAM in meno
+        gc.collect()
+
+    @staticmethod
+    def _as_document(content: str) -> str:
+        # i chunk iniziano con "[file] titolo > sezione": e' il titolo che il modello si aspetta
+        header, _, body = content.partition("\n\n")
+        return f"title: {header.strip() or 'none'} | text: {body.strip() or header.strip()}"
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        docs = [self._as_document(t) for t in texts]
+        return self.model.encode(docs, batch_size=16, normalize_embeddings=True).astype(np.float32)
+
+    def embed_query(self, query: str) -> np.ndarray:
+        return self.model.encode([query], prompt_name="SearchQuery",
+                                 normalize_embeddings=True)[0].astype(np.float32)
+
+
+def embedder_id() -> str:
+    """Identifica modello e dimensione senza caricare il modello (per decidere se serve un reindex)."""
+    return "minilm" if EMBED_MODEL == "minilm" else f"embeddinggemma-2:{EMBED_DIM or 768}"
+
+
+def get_model():
     global _model
     if _model is None:
-        _model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        if EMBED_MODEL == "minilm":
+            _model = MiniLMEmbedder()
+        elif EMBED_MODEL == "embeddinggemma-2":
+            _model = GemmaEmbedder(EMBED_DIM)
+        else:
+            raise ValueError(f"KB_EMBED_MODEL sconosciuto: {EMBED_MODEL}")
     return _model
 
 
@@ -119,7 +181,7 @@ def _load_emb_cache(conn: sqlite3.Connection) -> None:
     global _emb_matrix, _emb_meta, _bm25
     rows = conn.execute("SELECT file, section, content, embedding FROM chunks").fetchall()
     if not rows:
-        _emb_matrix = np.zeros((0, 384), dtype=np.float32)
+        _emb_matrix = np.zeros((0, 0), dtype=np.float32)
         _emb_meta = []
         _bm25 = BM25Index([])
         return
@@ -144,6 +206,7 @@ def get_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_file ON chunks(file)")
+    conn.execute("CREATE TABLE IF NOT EXISTS kb_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS search_stats (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -267,7 +330,7 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         return 0
 
     texts = [c["content"] for c in chunks]
-    embeddings = np.array(list(model.embed(texts)))
+    embeddings = model.embed_documents(texts)
 
     conn.execute("DELETE FROM chunks WHERE file = ?", (path.name,))
     conn.executemany(
@@ -292,6 +355,17 @@ def export_chunks_json(conn: sqlite3.Connection) -> None:
 
 def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int]:
     md_files = [p for p in KB_DIR.glob("*.md") if p.name != "MEMORY.md"]
+
+    # vettori di modelli diversi non sono confrontabili: se il modello e' cambiato si riparte da zero
+    row = conn.execute("SELECT value FROM kb_meta WHERE key = 'embed_model'").fetchone()
+    stored = row[0] if row else ("minilm" if conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() else None)
+    if stored != embedder_id():
+        if stored is not None:
+            print(f"KB RAG: modello cambiato ({stored} -> {embedder_id()}), reindex completo", file=sys.stderr)
+        conn.execute("DELETE FROM chunks")
+        conn.execute("INSERT OR REPLACE INTO kb_meta (key, value) VALUES ('embed_model', ?)", (embedder_id(),))
+        conn.commit()
+        force = True
     updated_files = 0
     total_chunks = 0
 
@@ -336,8 +410,7 @@ def rank(query: str, top_k: int = 5, mode: str = None, rerank: bool = True) -> l
     if _emb_matrix.shape[0] == 0:
         return []
 
-    model = get_model()
-    q_emb = np.array(list(model.embed([query])))[0].astype(np.float32)
+    q_emb = get_model().embed_query(query)
 
     # cosine similarity vectorizzata: una sola matrix multiplication
     norms = np.linalg.norm(_emb_matrix, axis=1)
