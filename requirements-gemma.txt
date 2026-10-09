@@ -1,0 +1,6 @@
+# Optional: EmbeddingGemma 2 embedder (KB_EMBED_MODEL=embeddinggemma-2).
+# Install in a dedicated virtualenv on top of requirements.txt; torch CPU wheels:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+transformers>=5.18
+sentence-transformers>=6.1

@@ -143,7 +143,7 @@ rag/
 ## How it works
 
 1. **Chunking** — each `.md` file is split on `##` headers; frontmatter is stripped; sections longer than `CHUNK_MAX_CHARS` (400) are further split into overlapping sub-chunks with `CHUNK_OVERLAP` (80) chars of context continuity
-2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages)
+2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages) or, optionally, [EmbeddingGemma 2](#optional-embeddinggemma-2) (768 dimensions, 8K tokens, chunk header passed as document title). The model name is stored in the `kb_meta` table: changing it triggers a full reindex
 3. **Storage** — vectors stored as `float32` BLOBs in SQLite + `kb_chunks.json` for hooks
 4. **Search** — hybrid: BM25 over an in-memory inverted index + cosine similarity in numpy, the two rankings (top 50 each) fused with Reciprocal Rank Fusion; top-K returned. BM25 catches exact identifiers (table names, ports, hostnames) that a 128-token embedding model blurs; embeddings catch paraphrased natural-language questions
 5. **Rerank + confidence** — the top 10 hybrid candidates are rescored by a local multilingual cross-encoder (ONNX, int8, see `reranker.py`): one forward pass per (query, chunk) pair, no text generated. The top score is mapped to a calibrated probability (Platt scaling) that the answer is among the results; below `KB_MIN_CONFIDENCE` the tool says so instead of silently returning noise
@@ -165,6 +165,9 @@ rag/
 | `KB_RERANK_CANDIDATES` | `10` | Hybrid candidates passed to the reranker |
 | `KB_RERANK_THREADS` | `4` | ONNX Runtime threads for the reranker |
 | `KB_RERANK_CACHE` | `~/.cache/claude-rag/models` | Where reranker models are downloaded |
+| `KB_EMBED_MODEL` | `minilm` | Embedding model: `minilm` (fastembed, ONNX) or `embeddinggemma-2` (sentence-transformers, see below). Changing it re-embeds the whole KB |
+| `KB_EMBED_DIM` | `768` | EmbeddingGemma 2 only: Matryoshka truncation to `512`, `256` or `128` |
+| `KB_EMBED_THREADS` | `4` | EmbeddingGemma 2 only: torch CPU threads |
 | `KB_MIN_CONFIDENCE` | `0.5` | Below this calibrated confidence, `kb_search` warns that the answer is probably not in the KB |
 
 ## Evaluating retrieval
@@ -186,6 +189,28 @@ Measured on the author's KB (5,241 chunks, 50 answerable + 7 unanswerable querie
 | **hybrid (1.2.0)** | 0.64 | 0.90 | **1.00** |
 | **hybrid + rerank `mmarco-mminilm` (1.3.0, default)** | **0.80** | **0.94** | **1.00** |
 | hybrid + rerank `bge-m3` (20 candidates) | 0.74 | 0.96 | 1.00 |
+
+## Optional: EmbeddingGemma 2
+
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (Google, Apache-2.0, October 2026) reads 8K tokens instead of 128 and needs task prefixes, which the server adds: queries as `task: search result | query: …`, chunks as `title: <chunk header> | text: …`. Only the text part of the model is kept in memory (271M of 744M parameters, vision and audio encoders dropped), in fp32 on CPU (bf16 is ~2.5× slower without hardware support; fp16 is not supported by the model).
+
+```bash
+py -m venv ~/.venvs/embgemma
+~/.venvs/embgemma/Scripts/python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+~/.venvs/embgemma/Scripts/python -m pip install -r requirements-gemma.txt
+```
+
+Then register the server with that interpreter and `"env": {"KB_EMBED_MODEL": "embeddinggemma-2"}`. The first start re-embeds the whole KB.
+
+Measured on the author's KB (6,885 chunks, 48 answerable + 7 unanswerable queries, same gold set for both models):
+
+| Retriever | MiniLM: top 1 / top 5 / MRR | **EmbeddingGemma 2**: top 1 / top 5 / MRR |
+|---|---|---|
+| semantic only | 0.58 / 0.71 / 0.65 | **0.69 / 0.92 / 0.80** |
+| hybrid | 0.65 / 0.83 / 0.74 | **0.73 / 0.90 / 0.81** |
+| hybrid + rerank (default) | 0.77 / 0.92 / 0.83 | **0.79** / 0.90 / 0.83 |
+
+A cosine threshold on Gemma's semantic score tells "not in the KB" apart with 0.93 accuracy (MiniLM: 0.69). Costs: full reindex ~1 hour on 4 CPU threads (vs minutes), ~135 ms per query embedding, ~3 GB RAM at load. Matryoshka truncation to 256 dimensions loses about one query in 48.
 
 ## Credits
 

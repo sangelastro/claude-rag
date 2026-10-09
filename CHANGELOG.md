@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.4.0] — 2026-10-09
+
+### Added
+- **Optional EmbeddingGemma 2 embedder** (`KB_EMBED_MODEL=embeddinggemma-2`, `KB_EMBED_DIM`, `KB_EMBED_THREADS`, `requirements-gemma.txt`): text-only, fp32 on CPU, with the model's query/document prefixes. Semantic search on the author's gold set: correct section in top 5 **0.71 → 0.92**, MRR 0.65 → 0.80; hybrid + rerank rank 1 0.77 → 0.79
+- `kb_meta` table records the embedding model; changing model forces a full reindex instead of mixing incompatible vectors
+- `eval_retrieval.py`: the semantic retriever uses the server's embedder; `KB_EVAL_GOLD` overrides the gold set path
+
+### Changed
+- MiniLM remains the default: nothing changes without `KB_EMBED_MODEL`
+
+---
+
 ## [1.3.0] — 2026-09-24
 
 ### Added
