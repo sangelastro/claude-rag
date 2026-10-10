@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.4.1] — 2026-10-10
+
+### Changed
+- README rewritten and reorganised (quick start, tools, how it works, embedding model choice, hooks, one configuration section, evaluation), with an Italian version (`README.it.md`)
+- New architecture diagram as SVG in English and Italian (`docs/architecture.svg`, `docs/architecture.it.svg`), readable in light and dark theme; it replaces `docs/diagram.png` and `docs/diagram.html`
+
+---
+
 ## [1.4.0] — 2026-10-09
 
 ### Added

@@ -1,217 +1,256 @@
-# claude-rag — MCP RAG Server for Markdown Knowledge Bases
+# claude-rag
 
-**Author**: [Sergio Angelastro](https://github.com/sangelastro) — MIT License
+**Local RAG for Claude Code over a folder of Markdown files.**
 
-MCP server that indexes a folder of `.md` files into a local SQLite vector store and exposes hybrid search (BM25 keyword + semantic embeddings) as Claude Code tools. The core RAG system (chunking, embedding, SQLite vector store, MCP server, hybrid search, retrieval eval) is original work by the author.
+🇬🇧 English · [🇮🇹 Italiano](README.it.md)
 
-> **Hook system** (`hooks/`) inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by [@Pinperepette](https://github.com/Pinperepette) (MIT) — see [CREDITS.md](CREDITS.md)
+claude-rag turns a folder of `.md` notes into a knowledge base that Claude Code can search. It runs entirely on your machine: no API keys, no cloud, no data leaving the PC.
 
-## Architecture
+- **Search tool**: Claude calls `kb_search("…")` and gets back the most relevant sections, each with its source file and a confidence score.
+- **Automatic recall** (optional): hooks add matching notes to your prompt before Claude even sees it.
+- **Measured, not guessed**: a retrieval benchmark (`eval/`) backs every default.
 
-![Architecture Diagram](docs/diagram.png)
+![How claude-rag works: indexing, search and hooks](docs/architecture.svg)
 
-> 📊 **[Interactive diagram →](docs/diagram.html)** · 🔎 **[How `kb_search` finds an answer, step by step →](docs/how_search_works.html)**
+> 🔎 **[Interactive walkthrough: how `kb_search` finds an answer, step by step →](docs/how_search_works.html)**
 
-Three components working together:
+---
 
-| | What | When |
-|---|---|---|
-| **① Indexing** | `.md` files → Chunker → Embedder → SQLite + JSON | on startup / `kb_reindex()` |
-| **② MCP** | Claude calls `kb_search()` → BM25 + cosine sim fused with RRF → top-K chunks | explicit hybrid search |
-| **③ Hook** | every prompt intercepted → keyword score on `kb_chunks.json` → auto-inject | automatic, ~10ms, no model |
+## Contents
 
-**Stack**: Python · fastembed / ONNX Runtime (embedding `paraphrase-multilingual-MiniLM-L12-v2` ~120MB + reranker `mmarco-mMiniLMv2-L12` int8 ~120MB, CPU-only) · SQLite · MCP stdio
+1. [Quick start](#quick-start)
+2. [What Claude can do with it](#what-claude-can-do-with-it)
+3. [How it works](#how-it-works)
+4. [Choosing the embedding model](#choosing-the-embedding-model)
+5. [Optional: automatic recall with hooks](#optional-automatic-recall-with-hooks)
+6. [Configuration](#configuration)
+7. [Measuring retrieval quality](#measuring-retrieval-quality)
+8. [Project layout](#project-layout)
+9. [Credits and license](#credits-and-license)
 
-## Tools exposed
+---
 
-| Tool | Description |
-|---|---|
-| `kb_search(query, top_k=5)` | Hybrid search (BM25 + semantic, RRF) — returns top-K chunks with source file and section. `KB_SEARCH_MODE=semantic` for cosine only |
-| `kb_reindex(force=False)` | Re-indexes files modified since last run (mtime-based) |
-| `kb_stats()` | Shows indexed files, chunk counts, last update timestamps |
-| `kb_savings()` | Shows cumulative token savings: RAG chunks served vs full-file baseline, broken down by source (`mcp` / `hook`) |
+## Quick start
 
-## Setup
-
-### 1. Clone
+**1. Clone the repo inside your KB folder.** Your `.md` files live in the parent folder.
 
 ```bash
-# Default layout: repo sits inside the KB folder
-# KB files (.md) go in the parent directory
 git clone https://github.com/sangelastro/claude-rag ~/.claude/my-kb/rag
 ```
 
-Or clone anywhere and point to your KB folder via env var (see step 3).
-
-### 2. Install dependencies
+**2. Install the dependencies.**
 
 ```bash
 cd ~/.claude/my-kb/rag
 pip install -r requirements.txt
 ```
 
-On first run the model (`paraphrase-multilingual-MiniLM-L12-v2`, ~120MB) is downloaded automatically from HuggingFace. This model supports 50+ languages including Italian natively.
-
-### 3. Register in Claude Code
-
-Add to `~/.claude.json` under `mcpServers`:
+**3. Register the server in Claude Code** (`~/.claude.json`, under `mcpServers`):
 
 ```json
 "my-kb": {
   "command": "python",
-  "args": ["/absolute/path/to/rag/server.py"],
-  "env": {
-    "KB_RAG_DIR": "/absolute/path/to/your/kb/folder"
-  }
+  "args": ["/absolute/path/to/rag/server.py"]
 }
 ```
 
-- **`KB_RAG_DIR`** — folder containing your `.md` files (default: `../` relative to `server.py`)
-- **`KB_RAG_DB`** — SQLite database path (default: `kb.db` next to `server.py`)
-- **`CHUNK_MAX_CHARS`** — max chars per chunk before splitting (default: `400`)
-- **`CHUNK_OVERLAP`** — overlap in chars between consecutive sub-chunks (default: `80`)
+If the repo is not inside the KB folder, add `"env": {"KB_RAG_DIR": "/absolute/path/to/your/kb"}`.
 
-If the repo is cloned inside the KB folder (as in the example above), both env vars can be omitted.
+**4. Restart Claude Code.** On first start the server downloads the embedding model (~120 MB) and indexes every `.md` file. After that, only changed files are re-indexed.
 
-### 4. Restart Claude Code
+---
 
-The server starts automatically. On first launch it indexes all `.md` files in `KB_RAG_DIR`.
+## What Claude can do with it
 
-## Optional: Claude Code Hooks
+| Tool | What it does |
+|---|---|
+| `kb_search(query, top_k=5)` | Returns the `top_k` most relevant chunks, each with file, section and score. Warns when the answer is probably not in the KB |
+| `kb_reindex(force=False)` | Re-indexes the files changed since the last run (`force=True`: all of them) |
+| `kb_stats()` | Files indexed, chunks per file, last update |
+| `kb_savings()` | Tokens saved: chunks served vs reading the whole files, split by tool and hook |
 
-Two hooks auto-inject KB context without explicit `kb_search` calls.
-Approach inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) (MIT).
-
-| Hook | Script | What it does |
-|---|---|---|
-| `SessionStart` | `hooks/kb_session_start.py` | Injects KB table of contents at session start |
-| `UserPromptSubmit` | `hooks/kb_recall.py` | Auto-injects top matching chunks before each prompt (keyword scoring, ~10ms, no model load) |
-
-### Setup hooks
-
-Copy the relevant sections from `hooks/hooks_example.json` into your `~/.claude/settings.json`, replacing the placeholder paths:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "*",
-      "hooks": [{"type": "command", "command": "python /absolute/path/to/rag/hooks/kb_session_start.py"}]
-    }],
-    "UserPromptSubmit": [{
-      "matcher": "*",
-      "hooks": [{"type": "command", "command": "python /absolute/path/to/rag/hooks/kb_recall.py", "timeout": 5}]
-    }]
-  }
-}
-```
-
-`kb_chunks.json` (used by `kb_recall.py`) is auto-generated next to `kb.db` on every reindex. No model loading in hooks — scoring uses token overlap only.
-
-Hook behaviour is tunable via env vars:
-
-| Variable | Default | Description |
-|---|---|---|
-| `KB_RAG_HOOK_TOP_K` | `3` | Max chunks injected per prompt |
-| `KB_RAG_HOOK_MIN_SCORE` | `0.15` | Minimum score to trigger injection |
-| `KB_RAG_HOOK_MIN_WORDS` | `4` | Skip prompts shorter than N words |
-| `KB_RAG_HOOK_TOKEN_BUDGET` | `6000` | Max chars injected (~4 chars/token) |
-
-## File structure
-
-```
-rag/
-├── server.py           # MCP server
-├── reranker.py         # Local cross-encoder reranker + calibrated confidence
-├── requirements.txt
-├── .gitignore
-├── README.md
-├── hooks/
-│   ├── kb_session_start.py   # SessionStart hook
-│   ├── kb_recall.py          # UserPromptSubmit hook
-│   └── hooks_example.json    # Hook config template
-├── eval/
-│   ├── eval_retrieval.py       # Retrieval benchmark against a gold set
-│   └── gold_set.example.json   # Gold set format (the real one stays local)
-├── docs/how_search_works.html  # Interactive walkthrough of the search pipeline
-├── architecture.html   # Technical documentation
-└── kb_rag_slides.html  # Architecture slide deck
-```
-
-`kb.db`, `kb_chunks.json`, `eval/gold_set.json` and `eval/results.json` are generated locally and excluded from git: they contain KB content.
+---
 
 ## How it works
 
-1. **Chunking** — each `.md` file is split on `##` headers; frontmatter is stripped; sections longer than `CHUNK_MAX_CHARS` (400) are further split into overlapping sub-chunks with `CHUNK_OVERLAP` (80) chars of context continuity
-2. **Embedding** — chunks are encoded with `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages) or, optionally, [EmbeddingGemma 2](#optional-embeddinggemma-2) (768 dimensions, 8K tokens, chunk header passed as document title). The model name is stored in the `kb_meta` table: changing it triggers a full reindex
-3. **Storage** — vectors stored as `float32` BLOBs in SQLite + `kb_chunks.json` for hooks
-4. **Search** — hybrid: BM25 over an in-memory inverted index + cosine similarity in numpy, the two rankings (top 50 each) fused with Reciprocal Rank Fusion; top-K returned. BM25 catches exact identifiers (table names, ports, hostnames) that a 128-token embedding model blurs; embeddings catch paraphrased natural-language questions
-5. **Rerank + confidence** — the top 10 hybrid candidates are rescored by a local multilingual cross-encoder (ONNX, int8, see `reranker.py`): one forward pass per (query, chunk) pair, no text generated. The top score is mapped to a calibrated probability (Platt scaling) that the answer is among the results; below `KB_MIN_CONFIDENCE` the tool says so instead of silently returning noise
-6. **Hooks** — keyword scoring on `kb_chunks.json` (no model), injected before each prompt
-7. **Invalidation** — mtime-based: only modified files are re-indexed on startup
-8. **Savings tracking** — every search records chars served vs full-file baseline in `search_stats` table; `kb_savings()` aggregates the cumulative token reduction without re-reading any file
+The picture above has three parts.
 
-## Environment variables
+**① Indexing**, at startup and on `kb_reindex()`
+1. Each `.md` file is split on its `##` sections. Long sections become overlapping chunks (400 characters, 80 shared with the next one). YAML frontmatter is dropped; every chunk keeps a header with its file and section.
+2. Every chunk is turned into a vector by the embedding model.
+3. Text and vectors go into `kb.db` (SQLite). The plain text is also exported to `kb_chunks.json` for the hooks.
+4. Only files whose modification time changed are processed again.
 
-| Variable | Default | Description |
+**② Search**, when Claude calls `kb_search()`
+1. **BM25** ranks the chunks by exact words: table names, ports, hostnames, error codes.
+2. **Semantic search** ranks them by meaning (cosine similarity between vectors): paraphrases and natural-language questions.
+3. The two top-50 lists are merged with **Reciprocal Rank Fusion**.
+4. A local **cross-encoder reranker** re-reads the best 10 together with the question and puts them in order. Its top score is turned into a **calibrated confidence**; below 0.5 Claude is told the answer is probably not in the KB.
+
+**③ Hooks**, optional and automatic: see [below](#optional-automatic-recall-with-hooks).
+
+---
+
+## Choosing the embedding model
+
+| | **MiniLM** (default) | **EmbeddingGemma 2** (optional) |
 |---|---|---|
-| `KB_RAG_DIR` | `../` (relative to `server.py`) | Folder with `.md` files to index |
-| `KB_RAG_DB` | `./kb.db` (next to `server.py`) | SQLite database path |
-| `KB_RAG_NAME` | `kb-rag` | MCP server name |
-| `CHUNK_MAX_CHARS` | `400` | Max chars per chunk; longer sections are split into overlapping sub-chunks |
-| `CHUNK_OVERLAP` | `80` | Overlap chars between adjacent sub-chunks to preserve context continuity |
-| `KB_SEARCH_MODE` | `hybrid` | `hybrid` (BM25 + semantic, RRF) or `semantic` (cosine only, behaviour up to 1.1.0) |
-| `KB_RERANK` | `mmarco-mminilm` | Local cross-encoder that reorders the hybrid candidates: `mmarco-mminilm` (AVX-512 int8), `mmarco-mminilm-avx2` (older CPUs), `bge-m3` (slower, not calibrated) or `off`. If it cannot load, search falls back to hybrid |
-| `KB_RERANK_CANDIDATES` | `10` | Hybrid candidates passed to the reranker |
-| `KB_RERANK_THREADS` | `4` | ONNX Runtime threads for the reranker |
-| `KB_RERANK_CACHE` | `~/.cache/claude-rag/models` | Where reranker models are downloaded |
-| `KB_EMBED_MODEL` | `minilm` | Embedding model: `minilm` (fastembed, ONNX) or `embeddinggemma-2` (sentence-transformers, see below). Changing it re-embeds the whole KB |
-| `KB_EMBED_DIM` | `768` | EmbeddingGemma 2 only: Matryoshka truncation to `512`, `256` or `128` |
-| `KB_EMBED_THREADS` | `4` | EmbeddingGemma 2 only: torch CPU threads |
-| `KB_MIN_CONFIDENCE` | `0.5` | Below this calibrated confidence, `kb_search` warns that the answer is probably not in the KB |
+| Model | `paraphrase-multilingual-MiniLM-L12-v2` | [`google/embeddinggemma-2`](https://huggingface.co/google/embeddinggemma-2), Apache-2.0 |
+| Reads per chunk | 128 tokens | 8K tokens, chunk header used as the document title |
+| Vector size | 384 | 768 (can be cut to 512, 256, 128) |
+| Right section in top 5 (semantic only) | 0.71 | **0.92** |
+| Tells "not in the KB" apart | 69% | **93%** |
+| Full reindex (6,900 chunks, 4 CPU threads) | a few minutes | ~1 hour, once |
+| Per search | a few ms | ~0.5 s with the reranker |
+| RAM per server | ~0.5 GB | ~2 GB |
+| Runtime | fastembed (ONNX) | sentence-transformers + torch, in its own virtualenv |
 
-## Evaluating retrieval
+Start with MiniLM. Switch to EmbeddingGemma 2 if your questions are often in natural language, or if your notes are long and full of context.
 
-`eval/eval_retrieval.py` measures how often the right section comes back, on a gold set of real queries labelled with their correct `file` + `section`. It compares semantic, hook lexical, BM25, hybrid, the actual `server.rank()` and (optionally) a local cross-encoder reranker. It only reads `kb.db` and never writes to `search_stats`.
+### Switching to EmbeddingGemma 2
 
 ```bash
-cp eval/gold_set.example.json eval/gold_set.json   # then write queries about your KB
-py eval/eval_retrieval.py --no-rerank
-```
-
-Include unanswerable queries (`"kind": "neg"`): the script also reports whether a score threshold can tell "not in the KB" apart from a real hit. `--calibrate` fits the Platt parameters of each reranker with 5-fold cross-validation; copy `platt_all` into `reranker.py`.
-
-Measured on the author's KB (5,241 chunks, 50 answerable + 7 unanswerable queries). Reranking 10 candidates with `mmarco-mminilm` takes ~0.4 s on CPU (4 threads; `bge-m3` ~6 s for 20). Its calibrated confidence tells "not in the KB" apart with 0.95 accuracy in cross-validation (calibration error 0.07):
-
-| Retriever | Correct section in top 1 | in top 5 | in top 10 |
-|---|---|---|---|
-| semantic (≤ 1.1.0) | 0.58 | 0.74 | 0.82 |
-| **hybrid (1.2.0)** | 0.64 | 0.90 | **1.00** |
-| **hybrid + rerank `mmarco-mminilm` (1.3.0, default)** | **0.80** | **0.94** | **1.00** |
-| hybrid + rerank `bge-m3` (20 candidates) | 0.74 | 0.96 | 1.00 |
-
-## Optional: EmbeddingGemma 2
-
-[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (Google, Apache-2.0, October 2026) reads 8K tokens instead of 128 and needs task prefixes, which the server adds: queries as `task: search result | query: …`, chunks as `title: <chunk header> | text: …`. Only the text part of the model is kept in memory (271M of 744M parameters, vision and audio encoders dropped), in fp32 on CPU (bf16 is ~2.5× slower without hardware support; fp16 is not supported by the model).
-
-```bash
-py -m venv ~/.venvs/embgemma
+python -m venv ~/.venvs/embgemma
 ~/.venvs/embgemma/Scripts/python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ~/.venvs/embgemma/Scripts/python -m pip install -r requirements-gemma.txt
 ```
 
-Then register the server with that interpreter and `"env": {"KB_EMBED_MODEL": "embeddinggemma-2"}`. The first start re-embeds the whole KB.
+On Linux and macOS the interpreter is in `bin/` instead of `Scripts/`. Then point the server at it:
 
-Measured on the author's KB (6,885 chunks, 48 answerable + 7 unanswerable queries, same gold set for both models):
+```json
+"my-kb": {
+  "command": "/home/you/.venvs/embgemma/Scripts/python",
+  "args": ["/absolute/path/to/rag/server.py"],
+  "env": {"KB_EMBED_MODEL": "embeddinggemma-2"}
+}
+```
 
-| Retriever | MiniLM: top 1 / top 5 / MRR | **EmbeddingGemma 2**: top 1 / top 5 / MRR |
+Things to know:
+- **The model is recorded in `kb.db`.** When it changes, the next start re-embeds the whole KB instead of mixing vectors of different sizes.
+- **Every Claude Code session starts its own server.** Close or reconnect (`/mcp` → Reconnect) all open sessions after switching; a session still on the old settings would re-index the KB back to the old model.
+- The server keeps only the text part of Gemma in memory (271M of 744M parameters) and runs it in fp32 on CPU: bf16 is ~2.5× slower without hardware support, fp16 is not supported by the model.
+
+---
+
+## Optional: automatic recall with hooks
+
+Two Claude Code hooks add KB context without an explicit `kb_search` call. They use keyword matching on `kb_chunks.json`: ~10 ms, no model loaded.
+
+| Hook | Script | What it does |
 |---|---|---|
-| semantic only | 0.58 / 0.71 / 0.65 | **0.69 / 0.92 / 0.80** |
-| hybrid | 0.65 / 0.83 / 0.74 | **0.73 / 0.90 / 0.81** |
-| hybrid + rerank (default) | 0.77 / 0.92 / 0.83 | **0.79** / 0.90 / 0.83 |
+| `SessionStart` | `hooks/kb_session_start.py` | Adds the KB table of contents at the start of each session |
+| `UserPromptSubmit` | `hooks/kb_recall.py` | Adds the best-matching chunks before each prompt, within a size budget |
 
-A cosine threshold on Gemma's semantic score tells "not in the KB" apart with 0.93 accuracy (MiniLM: 0.69). Costs: full reindex ~1 hour on 4 CPU threads (vs minutes), ~135 ms per query embedding, ~3 GB RAM at load. Matryoshka truncation to 256 dimensions loses about one query in 48.
+Copy the sections of `hooks/hooks_example.json` into `~/.claude/settings.json` and replace the paths:
 
-## Credits
+```json
+{
+  "hooks": {
+    "SessionStart": [{"matcher": "*", "hooks": [
+      {"type": "command", "command": "python /absolute/path/to/rag/hooks/kb_session_start.py"}]}],
+    "UserPromptSubmit": [{"matcher": "*", "hooks": [
+      {"type": "command", "command": "python /absolute/path/to/rag/hooks/kb_recall.py", "timeout": 5}]}]
+  }
+}
+```
 
-Hook architecture inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by Pinperepette (MIT License) — in particular the UserPromptSubmit recall pattern and guard rail logic.
+---
+
+## Configuration
+
+All settings are environment variables in the `env` block of the server (or of the hooks).
+
+**Where the KB lives**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KB_RAG_DIR` | parent of `server.py` | Folder with the `.md` files |
+| `KB_RAG_DB` | `kb.db` next to `server.py` | SQLite database |
+| `KB_RAG_NAME` | `kb-rag` | MCP server name |
+
+**Indexing and embedding**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CHUNK_MAX_CHARS` | `400` | Maximum chunk size; longer sections are split |
+| `CHUNK_OVERLAP` | `80` | Characters shared by consecutive chunks |
+| `KB_EMBED_MODEL` | `minilm` | `minilm` or `embeddinggemma-2`. Changing it re-embeds the whole KB |
+| `KB_EMBED_DIM` | `768` | EmbeddingGemma 2 only: cut vectors to `512`, `256` or `128` |
+| `KB_EMBED_THREADS` | `4` | EmbeddingGemma 2 only: CPU threads |
+
+**Search**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KB_SEARCH_MODE` | `hybrid` | `hybrid` (BM25 + semantic) or `semantic` (cosine only) |
+| `KB_RERANK` | `mmarco-mminilm` | Reranker: `mmarco-mminilm` (AVX-512), `mmarco-mminilm-avx2` (older CPUs), `bge-m3` (slower, not calibrated) or `off`. If it cannot load, search continues without it |
+| `KB_RERANK_CANDIDATES` | `10` | Candidates passed to the reranker |
+| `KB_RERANK_THREADS` | `4` | Reranker CPU threads |
+| `KB_RERANK_CACHE` | `~/.cache/claude-rag/models` | Where reranker models are downloaded |
+| `KB_MIN_CONFIDENCE` | `0.5` | Below this confidence `kb_search` warns that the answer is probably not in the KB |
+
+**Hooks**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KB_RAG_HOOK_TOP_K` | `3` | Maximum chunks added per prompt |
+| `KB_RAG_HOOK_MIN_SCORE` | `0.15` | Minimum score to add anything |
+| `KB_RAG_HOOK_MIN_WORDS` | `4` | Prompts shorter than this are skipped |
+| `KB_RAG_HOOK_TOKEN_BUDGET` | `6000` | Maximum characters added (~4 characters per token) |
+
+---
+
+## Measuring retrieval quality
+
+`eval/eval_retrieval.py` checks how often the right section comes back, on a set of real questions labelled with their correct file and section. It compares every stage of the pipeline, only reads `kb.db` and records nothing.
+
+```bash
+cp eval/gold_set.example.json eval/gold_set.json   # then write questions about your KB
+python eval/eval_retrieval.py              # add --no-rerank to skip the reranker
+```
+
+Add some questions the KB cannot answer (`"kind": "neg"`): the script also reports whether a score threshold tells them apart. `--calibrate` fits the reranker's confidence on your own data. `KB_EVAL_GOLD` and `KB_RAG_DB` point it to another gold set or database.
+
+Results on the author's KB (6,885 chunks, 48 answerable and 7 unanswerable questions, October 2026). The cells show how often the right section is first / in the top 5, then the MRR:
+
+| Pipeline | MiniLM | EmbeddingGemma 2 |
+|---|---|---|
+| semantic only | 0.58 / 0.71 · 0.65 | **0.69 / 0.92 · 0.80** |
+| hybrid (BM25 + semantic) | 0.65 / 0.83 · 0.74 | **0.73 / 0.90 · 0.81** |
+| hybrid + reranker (default) | 0.77 / 0.92 · 0.83 | **0.79** / 0.90 · 0.83 |
+
+How each stage got here, release by release, is in the [CHANGELOG](CHANGELOG.md).
+
+---
+
+## Project layout
+
+```
+rag/
+├── server.py                  MCP server: indexing, hybrid search, tools
+├── reranker.py                Local cross-encoder and calibrated confidence
+├── requirements.txt           Default dependencies (fastembed)
+├── requirements-gemma.txt     Extra dependencies for EmbeddingGemma 2
+├── hooks/
+│   ├── kb_session_start.py    SessionStart hook
+│   ├── kb_recall.py           UserPromptSubmit hook
+│   └── hooks_example.json     Hook configuration template
+├── eval/
+│   ├── eval_retrieval.py      Retrieval benchmark
+│   └── gold_set.example.json  Gold set format (yours stays local)
+└── docs/
+    ├── architecture.svg       The diagram above (architecture.it.svg in Italian)
+    └── how_search_works.html  Interactive walkthrough of kb_search
+```
+
+`kb.db`, `kb_chunks.json`, `eval/gold_set.json` and `eval/results.json` are created locally and excluded from git, because they contain your notes.
+
+`architecture.html` and `kb_rag_slides.html` are older presentations written for release 1.3: they do not cover EmbeddingGemma 2.
+
+---
+
+## Credits and license
+
+The RAG system (chunking, embedding, SQLite vector store, MCP server, hybrid search, reranking, evaluation) is original work by [Sergio Angelastro](https://github.com/sangelastro), released under the [MIT License](LICENSE).
+
+The hook system is inspired by [agd-memory](https://github.com/Pinperepette/agd-memory) by [@Pinperepette](https://github.com/Pinperepette) (MIT): see [CREDITS.md](CREDITS.md).
