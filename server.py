@@ -26,6 +26,7 @@ from datetime import datetime
 
 import numpy as np
 from mcp.server.mcpserver.server import MCPServer
+from mcp.server.mcpserver.context import Context
 
 KB_DIR     = Path(os.environ.get("KB_RAG_DIR", str(Path(__file__).parent.parent)))
 DB_PATH    = Path(os.environ.get("KB_RAG_DB",  str(Path(__file__).parent / "kb.db")))
@@ -194,7 +195,8 @@ def _load_emb_cache(conn: sqlite3.Connection) -> None:
 # ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # piu' istanze del server (una per sessione) condividono il DB: chi trova il lock aspetta invece di fallire
+    conn = sqlite3.connect(DB_PATH, timeout=120)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             id        INTEGER PRIMARY KEY,
@@ -353,7 +355,7 @@ def export_chunks_json(conn: sqlite3.Connection) -> None:
     json_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=None), encoding="utf-8")
 
 
-def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int]:
+def reindex_all(conn: sqlite3.Connection, force: bool = False, on_progress=None) -> tuple[int, int]:
     md_files = [p for p in KB_DIR.glob("*.md") if p.name != "MEMORY.md"]
 
     # vettori di modelli diversi non sono confrontabili: se il modello e' cambiato si riparte da zero
@@ -369,8 +371,11 @@ def reindex_all(conn: sqlite3.Connection, force: bool = False) -> tuple[int, int
     updated_files = 0
     total_chunks = 0
 
-    for path in md_files:
-        if force or needs_reindex(conn, path):
+    todo = [p for p in md_files if force or needs_reindex(conn, p)]
+    for i, path in enumerate(todo):
+        if on_progress:
+            on_progress(i, len(todo), path.name)
+        if force or needs_reindex(conn, path):  # un'altra istanza potrebbe averlo appena fatto
             n = index_file(conn, path)
             total_chunks += n
             updated_files += 1
@@ -506,7 +511,7 @@ def kb_search(query: str, top_k: int = 5) -> str:
 
 
 @mcp.tool()
-def kb_reindex(force: bool = False) -> str:
+async def kb_reindex(ctx: Context, force: bool = False) -> str:
     """
     Reindicizza la KB dopo aver aggiornato i file .md.
     Chiamare dopo ogni modifica ai file della knowledge base.
@@ -514,9 +519,23 @@ def kb_reindex(force: bool = False) -> str:
     Args:
         force: Se True, reindicizza tutti i file anche se non modificati
     """
-    conn = get_db()
-    updated, chunks = reindex_all(conn, force=force)
-    conn.close()
+    import anyio
+
+    def on_progress(i: int, n: int, name: str) -> None:
+        # una notifica per file: senza, il client abortisce i reindex lunghi per inattivita' (30 min)
+        try:
+            anyio.from_thread.run(ctx.report_progress, i, n, name)
+        except Exception:
+            pass
+
+    def run() -> tuple[int, int]:
+        conn = get_db()
+        try:
+            return reindex_all(conn, force=force, on_progress=on_progress)
+        finally:
+            conn.close()
+
+    updated, chunks = await anyio.to_thread.run_sync(run)
     return f"Reindex completato: {updated} file aggiornati, {chunks} chunk indicizzati."
 
 
